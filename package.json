@@ -1,0 +1,344 @@
+{
+  "name": "azure-devops-pr",
+  "displayName": "Azure DevOps Pull Requests",
+  "description": "Review and manage Azure DevOps Pull Requests directly in VS Code",
+  "version": "0.2.0-beta.13",
+  "publisher": "kyrone",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "SCM Providers"
+  ],
+  "keywords": [
+    "azure devops",
+    "pull request",
+    "code review",
+    "pipelines",
+    "git"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:azureDevOpsPR.configurePAT",
+    "onCommand:azureDevOpsPR.signIn",
+    "onView:azureDevOpsPR.welcome",
+    "onView:azureDevOpsPR.pullRequests",
+    "onView:azureDevOpsPR.pipelines"
+  ],
+  "main": "./out/extension.js",
+  "icon": "resources/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/felipe-rochac/azure-devops-pr-extension"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "azureDevOpsPR.signIn",
+        "title": "Sign In to Azure DevOps",
+        "category": "Azure DevOps PR"
+      },
+      {
+        "command": "azureDevOpsPR.signOut",
+        "title": "Sign Out from Azure DevOps",
+        "category": "Azure DevOps PR"
+      },
+      {
+        "command": "azureDevOpsPR.refresh",
+        "title": "Refresh",
+        "category": "Azure DevOps PR",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "azureDevOpsPR.createPR",
+        "title": "Create Pull Request",
+        "category": "Azure DevOps PR",
+        "icon": "$(git-pull-request-create)"
+      },
+      {
+        "command": "azureDevOpsPR.openPR",
+        "title": "Open Pull Request",
+        "category": "Azure DevOps PR"
+      },
+      {
+        "command": "azureDevOpsPR.checkoutBranch",
+        "title": "Checkout Branch",
+        "category": "Azure DevOps PR",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "azureDevOpsPR.approvePR",
+        "title": "Approve Pull Request",
+        "category": "Azure DevOps PR",
+        "icon": "$(check)"
+      },
+      {
+        "command": "azureDevOpsPR.openPRInBrowser",
+        "title": "Open PR in Browser",
+        "category": "Azure DevOps PR",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "azureDevOpsPR.configurePAT",
+        "title": "Configure Personal Access Token",
+        "category": "Azure DevOps PR"
+      },
+      {
+        "command": "azureDevOpsPR.openPipelineDashboard",
+        "title": "Open Pipeline Dashboard",
+        "category": "Azure DevOps PR",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "azureDevOpsPR.openPipelineBuild",
+        "title": "Open Build in Dashboard",
+        "category": "Azure DevOps PR"
+      },
+      {
+        "command": "azureDevOpsPR.openPipelineBuildInBrowser",
+        "title": "Open in Browser",
+        "category": "Azure DevOps PR",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "azureDevOpsPR.selectPRProject",
+        "title": "Filter by Project",
+        "category": "Azure DevOps PR",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "azureDevOpsPR.selectPipelineProject",
+        "title": "Filter by Project",
+        "category": "Azure DevOps PR",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "azureDevOpsPR.selectPRRepo",
+        "title": "Filter by Repository",
+        "category": "Azure DevOps PR",
+        "icon": "$(repo)"
+      },
+      {
+        "command": "azureDevOpsPR.selectPipelineRepo",
+        "title": "Filter by Repository",
+        "category": "Azure DevOps PR",
+        "icon": "$(repo)"
+      },
+      {
+        "command": "azureDevOpsPR.createComment",
+        "title": "Add Comment",
+        "category": "Azure DevOps PR",
+        "enablement": "!commentIsEmpty"
+      },
+      {
+        "command": "azureDevOpsPR.replyComment",
+        "title": "Reply",
+        "category": "Azure DevOps PR",
+        "enablement": "!commentIsEmpty"
+      },
+      {
+        "command": "azureDevOpsPR.resolveComment",
+        "title": "✅ Resolve Thread",
+        "category": "Azure DevOps PR"
+      },
+      {
+        "command": "azureDevOpsPR.reactivateComment",
+        "title": "🔄 Reactivate Thread",
+        "category": "Azure DevOps PR"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "azure-devops-pr",
+          "title": "Azure DevOps PR",
+          "icon": "resources/icons/pr-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "azure-devops-pr": [
+        {
+          "id": "azureDevOpsPR.pullRequests",
+          "name": "Pull Requests",
+          "when": "azureDevOpsPR.authenticated"
+        },
+        {
+          "id": "azureDevOpsPR.pipelines",
+          "name": "Pipelines",
+          "when": "azureDevOpsPR.authenticated"
+        },
+        {
+          "id": "azureDevOpsPR.welcome",
+          "name": "Azure DevOps",
+          "when": "!azureDevOpsPR.authenticated"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "azureDevOpsPR.refresh",
+          "when": "view == azureDevOpsPR.pullRequests",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.selectPRProject",
+          "when": "view == azureDevOpsPR.pullRequests",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.selectPRRepo",
+          "when": "view == azureDevOpsPR.pullRequests",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.createPR",
+          "when": "view == azureDevOpsPR.pullRequests",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.openPipelineDashboard",
+          "when": "view == azureDevOpsPR.pipelines",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.selectPipelineProject",
+          "when": "view == azureDevOpsPR.pipelines",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.selectPipelineRepo",
+          "when": "view == azureDevOpsPR.pipelines",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.refresh",
+          "when": "view == azureDevOpsPR.pipelines",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "azureDevOpsPR.checkoutBranch",
+          "when": "viewItem == pullRequest",
+          "group": "inline"
+        },
+        {
+          "command": "azureDevOpsPR.openPR",
+          "when": "viewItem == pullRequest",
+          "group": "pr@1"
+        },
+        {
+          "command": "azureDevOpsPR.approvePR",
+          "when": "viewItem == pullRequest",
+          "group": "pr@2"
+        },
+        {
+          "command": "azureDevOpsPR.openPRInBrowser",
+          "when": "viewItem == pullRequest",
+          "group": "pr@3"
+        },
+        {
+          "command": "azureDevOpsPR.openPipelineBuildInBrowser",
+          "when": "viewItem == pipelineBuild",
+          "group": "pipeline@1"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "azureDevOpsPR.createComment",
+          "group": "inline",
+          "when": "commentController == azureDevOpsPR.comments && commentThreadIsEmpty"
+        },
+        {
+          "command": "azureDevOpsPR.replyComment",
+          "group": "inline",
+          "when": "commentController == azureDevOpsPR.comments && !commentThreadIsEmpty"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "azureDevOpsPR.resolveComment",
+          "group": "inline",
+          "when": "commentController == azureDevOpsPR.comments"
+        },
+        {
+          "command": "azureDevOpsPR.reactivateComment",
+          "group": "inline",
+          "when": "commentController == azureDevOpsPR.comments"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "azureDevOpsPR.welcome",
+        "contents": "Welcome to Azure DevOps Pull Requests!\n\nConnect your Azure DevOps organization to review and manage pull requests.\n\n[Configure Personal Access Token](command:azureDevOpsPR.configurePAT)\n\nNeed help? [View Documentation](https://docs.microsoft.com/azure/devops/integrate/get-started/authentication/pats)"
+      }
+    ],
+    "configuration": {
+      "title": "Azure DevOps Pull Requests",
+      "properties": {
+        "azureDevOpsPR.organizationUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Azure DevOps organization URL (e.g., https://dev.azure.com/your-org)",
+          "pattern": "^https://dev\\.azure\\.com/[a-zA-Z0-9_-]+/?$|^https://[a-zA-Z0-9_-]+\\.visualstudio\\.com/?$|^$"
+        },
+        "azureDevOpsPR.project": {
+          "type": "string",
+          "default": "",
+          "description": "Default Azure DevOps project name"
+        },
+        "azureDevOpsPR.defaultRepository": {
+          "type": "string",
+          "default": "",
+          "description": "Default repository name (auto-detected from git remote if empty)"
+        },
+        "azureDevOpsPR.autoRefreshInterval": {
+          "type": "number",
+          "default": 300,
+          "minimum": 60,
+          "description": "Auto-refresh interval in seconds (minimum 60)"
+        },
+        "azureDevOpsPR.showDrafts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show draft pull requests in the list"
+        },
+        "azureDevOpsPR.autoDetectFromWorkspace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically detect and apply Azure DevOps project/repository filters from the current workspace git remote when no filters are saved"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "@vscode/test-electron": "^2.3.8",
+    "@vscode/vsce": "^2.22.0",
+    "eslint": "^8.0.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.2.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "azure-devops-node-api": "^12.5.0"
+  }
+}
