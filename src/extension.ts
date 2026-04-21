@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AuthManager } from './utils/authManager';
 
 export function activate(context: vscode.ExtensionContext) {
-  const output = vscode.window.createOutputChannel('Azure DevOps PR');
+  const output = vscode.window.createOutputChannel('Azure DevOps Companion');
   context.subscriptions.push(output);
   output.appendLine('Extension activating...');
 
@@ -53,12 +53,14 @@ async function setupExtension(
 
   const { AzureDevOpsApi } = await import('./api/azureDevOpsApi');
   const { GitHelper } = await import('./utils/gitHelper');
+  const { suggestWorkItemTitle } = await import('./utils/workItemHelper');
   const api = new AzureDevOpsApi(authManager);
   const gitHelper = new GitHelper();
 
   // Lazy-load non-critical modules after core commands are already registered.
   const { PullRequestProvider } = await import('./providers/pullRequestProvider');
   const { PipelineProvider } = await import('./providers/pipelineProvider');
+  const { WorkItemProvider } = await import('./providers/workItemProvider');
   const { PRDetailPanel, ADOFileContentProvider } = await import('./views/prDetailPanel');
   const { CreatePRPanel } = await import('./views/createPRPanel');
   const { PipelineDashboardPanel } = await import('./views/pipelineDashboardPanel');
@@ -116,9 +118,21 @@ async function setupExtension(
     return undefined;
   }
 
+  function buildWorkItemBrowserUrl(item: any): string | undefined {
+    const workItem = item?.workItem ?? item;
+    const workItemId = workItem?.id;
+    const project = workItem?.projectName || workProvider.getSelectedProject() || prProvider.getSelectedProject() || pipelineProvider.getSelectedProject() || getProjectName();
+    const org = getOrgUrl();
+    if (!org || !project || !workItemId) {
+      return workItem?.url;
+    }
+    return `${org}/${encodeURIComponent(project)}/_workitems/edit/${workItemId}`;
+  }
+
   // --- Tree View Providers ---
   const prProvider = new PullRequestProvider(api, gitHelper);
   const pipelineProvider = new PipelineProvider(api);
+  const workProvider = new WorkItemProvider(api, gitHelper);
 
   // --- Restore saved filters ---
   interface SavedFilters {
@@ -128,12 +142,14 @@ async function setupExtension(
     pipelineProject?: string;
     pipelineRepo?: string;
     pipelineRepoName?: string;
+    workProject?: string;
   }
   const savedFilters = context.globalState.get<SavedFilters>('filters', {});
   if (savedFilters.prProject) { prProvider.setProject(savedFilters.prProject); }
   if (savedFilters.prRepo) { prProvider.setRepository(savedFilters.prRepo, savedFilters.prRepoName); }
   if (savedFilters.pipelineProject) { pipelineProvider.setProject(savedFilters.pipelineProject); }
   if (savedFilters.pipelineRepo) { pipelineProvider.setRepository(savedFilters.pipelineRepo, savedFilters.pipelineRepoName); }
+  if (savedFilters.workProject) { workProvider.setProject(savedFilters.workProject); }
 
   const startupConfig = vscode.workspace.getConfiguration('azureDevOpsPR');
   const autoDetectFromWorkspace = startupConfig.get<boolean>('autoDetectFromWorkspace', true);
@@ -145,6 +161,7 @@ async function setupExtension(
       if (ctx?.projectName) {
         prProvider.setProject(ctx.projectName);
         pipelineProvider.setProject(ctx.projectName);
+        workProvider.setProject(ctx.projectName);
       }
 
       if (ctx?.projectName && ctx?.repoName) {
@@ -168,6 +185,7 @@ async function setupExtension(
       pipelineProject: pipelineProvider.getSelectedProject(),
       pipelineRepo: pipelineProvider.getSelectedRepo(),
       pipelineRepoName: pipelineProvider.getSelectedRepoName(),
+      workProject: workProvider.getSelectedProject(),
     };
     context.globalState.update('filters', filters);
   }
@@ -195,6 +213,11 @@ async function setupExtension(
     treeDataProvider: pipelineProvider,
   });
 
+  const workTreeView = vscode.window.createTreeView('azureDevOpsPR.workItems', {
+    treeDataProvider: workProvider,
+    showCollapseAll: true,
+  });
+
   // Restore view titles from saved filters
   function buildTitle(base: string, project?: string, repoName?: string): string {
     const parts = [project, repoName].filter(Boolean);
@@ -202,26 +225,37 @@ async function setupExtension(
   }
   prTreeView.title = buildTitle('Pull Requests', savedFilters.prProject, savedFilters.prRepoName);
   pipelineTreeView.title = buildTitle('Pipelines', savedFilters.pipelineProject, savedFilters.pipelineRepoName);
+  workTreeView.title = buildTitle('My Work', savedFilters.workProject);
 
   // If auto-detection updated filters, reflect that in titles.
   prTreeView.title = buildTitle('Pull Requests', prProvider.getSelectedProject(), prProvider.getSelectedRepoName());
   pipelineTreeView.title = buildTitle('Pipelines', pipelineProvider.getSelectedProject(), pipelineProvider.getSelectedRepoName());
+  workTreeView.title = buildTitle('My Work', workProvider.getSelectedProject());
 
-  context.subscriptions.push(prTreeView, pipelineTreeView);
+  context.subscriptions.push(prTreeView, pipelineTreeView, workTreeView);
 
   // --- Update auth context ---
   async function updateAuthContext() {
     try {
       const isAuthenticated = await authManager.isAuthenticated();
+      const workItemsEnabled = vscode.workspace.getConfiguration('azureDevOpsPR').get<boolean>('enableWorkItems', true);
       await vscode.commands.executeCommand(
         'setContext',
         'azureDevOpsPR.authenticated',
         isAuthenticated
       );
+      await vscode.commands.executeCommand(
+        'setContext',
+        'azureDevOpsPR.workItemsEnabled',
+        workItemsEnabled
+      );
       output.appendLine(`Authenticated: ${isAuthenticated}`);
       if (isAuthenticated) {
         prProvider.refresh();
         pipelineProvider.refresh();
+        if (workItemsEnabled) {
+          workProvider.refresh();
+        }
       }
     } catch (err: any) {
       output.appendLine(`updateAuthContext error: ${err?.message ?? err}`);
@@ -234,6 +268,7 @@ async function setupExtension(
   const autoRefreshTimer = setInterval(() => {
     prProvider.refresh();
     pipelineProvider.refresh();
+    workProvider.refresh();
   }, refreshInterval);
   context.subscriptions.push({ dispose: () => clearInterval(autoRefreshTimer) });
 
@@ -255,6 +290,144 @@ async function setupExtension(
     vscode.commands.registerCommand('azureDevOpsPR.refresh', () => {
       prProvider.refresh();
       pipelineProvider.refresh();
+      workProvider.refresh();
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.openWorkItemInBrowser', (item: any) => {
+      const url = buildWorkItemBrowserUrl(item);
+      if (!url) {
+        vscode.window.showWarningMessage('Unable to determine work item URL for this item.');
+        return;
+      }
+      vscode.env.openExternal(vscode.Uri.parse(url));
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.createWorkItem', async () => {
+      const branch = await gitHelper.getCurrentBranch();
+      const selectedText = vscode.window.activeTextEditor?.document.getText(vscode.window.activeTextEditor.selection)?.trim();
+      const suggestedTitle = selectedText || suggestWorkItemTitle(branch);
+      const title = await vscode.window.showInputBox({
+        prompt: 'Enter a title for the new Task work item',
+        placeHolder: 'Task title',
+        value: suggestedTitle,
+        validateInput: (value) => value.trim() ? null : 'Title is required',
+      });
+      if (!title) { return; }
+
+      const description = await vscode.window.showInputBox({
+        prompt: 'Optional description',
+        placeHolder: 'Add more detail for the task',
+      });
+
+      try {
+        const project = workProvider.getSelectedProject() || prProvider.getSelectedProject() || pipelineProvider.getSelectedProject() || getProjectName();
+        const workItem = await api.createTaskWorkItem(title, description, project || undefined);
+        workProvider.refresh();
+        vscode.window.showInformationMessage(`Created Task #${workItem.id}: ${workItem.title}`);
+        const url = buildWorkItemBrowserUrl(workItem);
+        if (url) {
+          const action = await vscode.window.showInformationMessage(`Open work item #${workItem.id} in browser?`, 'Open');
+          if (action === 'Open') {
+            vscode.env.openExternal(vscode.Uri.parse(url));
+          }
+        }
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`Failed to create work item: ${err?.message ?? err}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.updateWorkItemState', async (item: any) => {
+      const workItem = item?.workItem ?? item;
+      if (!workItem?.id) { return; }
+
+      const states = [...new Set([workItem.state, 'New', 'Active', 'Resolved', 'Closed', 'Done', 'Removed'].filter(Boolean))];
+      const picked = await vscode.window.showQuickPick(states.map((state) => ({ label: state })), {
+        placeHolder: `Set state for work item #${workItem.id}`,
+      });
+      if (!picked) { return; }
+
+      try {
+        await api.updateWorkItemState(workItem.id, picked.label, workItem.projectName);
+        workProvider.refresh();
+        if (PRDetailPanel.currentPanel) {
+          await PRDetailPanel.currentPanel.refresh();
+        }
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`Failed to update work item state: ${err?.message ?? err}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.addWorkItemNote', async (item: any) => {
+      const workItem = item?.workItem ?? item;
+      if (!workItem?.id) { return; }
+
+      const note = await vscode.window.showInputBox({
+        prompt: `Add a note to work item #${workItem.id}`,
+        placeHolder: 'Progress update, blocker, or implementation note',
+        validateInput: (value) => value.trim() ? null : 'Note cannot be empty',
+      });
+      if (!note) { return; }
+
+      try {
+        await api.addWorkItemNote(workItem.id, note, workItem.projectName);
+        workProvider.refresh();
+        if (PRDetailPanel.currentPanel) {
+          await PRDetailPanel.currentPanel.refresh();
+        }
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`Failed to add work item note: ${err?.message ?? err}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.assignWorkItemToMe', async (item: any) => {
+      const workItem = item?.workItem ?? item;
+      if (!workItem?.id) { return; }
+
+      try {
+        await api.assignWorkItemToCurrentUser(workItem.id, workItem.projectName);
+        workProvider.refresh();
+        if (PRDetailPanel.currentPanel) {
+          await PRDetailPanel.currentPanel.refresh();
+        }
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`Failed to assign work item: ${err?.message ?? err}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.filterWorkItemStatus', async () => {
+      const available = workProvider.getAvailableStatuses();
+      const activeFilter = workProvider.getStatusFilter().map(s => s.toLowerCase());
+
+      // If no items loaded yet, provide a common default list
+      const statusOptions = (available.length > 0 ? available : ['New', 'Active', 'Resolved', 'Closed', 'Done', 'Removed'])
+        .map(s => ({
+          label: s,
+          picked: activeFilter.length === 0 || activeFilter.includes(s.toLowerCase()),
+        }));
+
+      const picked = await vscode.window.showQuickPick(statusOptions, {
+        placeHolder: 'Select statuses to show (deselect all to clear filter)',
+        canPickMany: true,
+        title: 'Filter Work Items by Status',
+      });
+
+      if (picked === undefined) { return; } // cancelled
+
+      // If all statuses are selected (or the user cleared all), treat as "no filter"
+      const allSelected = picked.length === statusOptions.length || picked.length === 0;
+      workProvider.setStatusFilter(allSelected ? [] : picked.map(p => p.label));
+
+      const filterCount = picked.length;
+      if (allSelected) {
+        vscode.window.showInformationMessage('Work item status filter cleared.');
+      } else {
+        vscode.window.showInformationMessage(`Showing work items with status: ${picked.map(p => p.label).join(', ')}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.clearWorkItemStatusFilter', () => {
+      workProvider.setStatusFilter([]);
+      vscode.window.showInformationMessage('Work item status filter cleared.');
     }),
 
     vscode.commands.registerCommand('azureDevOpsPR.openPR', async (item) => {
@@ -397,8 +570,10 @@ async function setupExtension(
         if (!picked) { return; }
         const project = picked.label.startsWith('$(close)') ? undefined : picked.label;
         prProvider.setProject(project);
+        workProvider.setProject(project);
         const label = project ? `Pull Requests (${project})` : 'Pull Requests';
         prTreeView.title = label;
+        workTreeView.title = buildTitle('My Work', project);
         saveFilters();
       } catch (err) {
         vscode.window.showErrorMessage(`Failed to load projects: ${err}`);
@@ -421,8 +596,10 @@ async function setupExtension(
         if (!picked) { return; }
         const project = picked.label.startsWith('$(close)') ? undefined : picked.label;
         pipelineProvider.setProject(project);
+        workProvider.setProject(project);
         const label = project ? `Pipelines (${project})` : 'Pipelines';
         pipelineTreeView.title = label;
+        workTreeView.title = buildTitle('My Work', project);
         saveFilters();
       } catch (err) {
         vscode.window.showErrorMessage(`Failed to load projects: ${err}`);
@@ -495,6 +672,8 @@ async function setupExtension(
         api.resetConnection();
         prProvider.refresh();
         pipelineProvider.refresh();
+        workProvider.refresh();
+        updateAuthContext();
       }
     })
   );

@@ -1,8 +1,11 @@
 import * as azdev from 'azure-devops-node-api';
 import * as GitApi from 'azure-devops-node-api/GitApi';
 import * as BuildApi from 'azure-devops-node-api/BuildApi';
+import * as WorkItemTrackingApi from 'azure-devops-node-api/WorkItemTrackingApi';
 import { GitPullRequest, GitPullRequestSearchCriteria, PullRequestStatus, Comment, CommentThread, GitPullRequestChange, GitPullRequestIteration } from 'azure-devops-node-api/interfaces/GitInterfaces';
 import { Build, BuildDefinitionReference, BuildQueryOrder, Timeline } from 'azure-devops-node-api/interfaces/BuildInterfaces';
+import { WorkItem, Wiql } from 'azure-devops-node-api/interfaces/WorkItemTrackingInterfaces';
+import { JsonPatchOperation } from 'azure-devops-node-api/interfaces/common/VSSInterfaces';
 import { AuthManager } from '../utils/authManager';
 import * as vscode from 'vscode';
 
@@ -14,10 +17,27 @@ export interface PRWithRepo extends GitPullRequest {
   repositoryName?: string;
 }
 
+export interface WorkItemSummary {
+  id: number;
+  title: string;
+  state: string;
+  type: string;
+  assignedTo?: string;
+  changedDate?: string;
+  projectName?: string;
+  url: string;
+}
+
+export interface CurrentUserIdentity {
+  id: string;
+  displayName?: string;
+}
+
 export class AzureDevOpsApi {
   private connection: azdev.WebApi | undefined;
   private gitClient: GitApi.IGitApi | undefined;
   private buildClient: BuildApi.IBuildApi | undefined;
+  private workItemClient: WorkItemTrackingApi.IWorkItemTrackingApi | undefined;
 
   constructor(private readonly authManager: AuthManager) {}
 
@@ -62,6 +82,7 @@ export class AzureDevOpsApi {
     this.connection = undefined;
     this.gitClient = undefined;
     this.buildClient = undefined;
+    this.workItemClient = undefined;
   }
 
   private getConfig() {
@@ -109,6 +130,15 @@ export class AzureDevOpsApi {
     const conn = await this.getConnection();
     this.buildClient = await conn.getBuildApi();
     return this.buildClient;
+  }
+
+  private async getWorkItemClient(): Promise<WorkItemTrackingApi.IWorkItemTrackingApi> {
+    if (this.workItemClient) {
+      return this.workItemClient;
+    }
+    const conn = await this.getConnection();
+    this.workItemClient = await conn.getWorkItemTrackingApi();
+    return this.workItemClient;
   }
 
   /**
@@ -379,6 +409,127 @@ export class AzureDevOpsApi {
     });
   }
 
+  async queryAssignedWorkItems(projectName?: string, top: number = 20): Promise<WorkItemSummary[]> {
+    return this.withRetry(async () => {
+      const workItems = await this.getWorkItemClient();
+      const project = projectName || this.getConfig().project;
+      const whereClauses = [`[System.AssignedTo] = @Me`];
+      if (project) {
+        whereClauses.push(`[System.TeamProject] = '${project.replace(/'/g, "''")}'`);
+      }
+
+      const wiql: Wiql = {
+        query: `SELECT [System.Id] FROM WorkItems WHERE ${whereClauses.join(' AND ')} ORDER BY [System.ChangedDate] DESC`,
+      };
+
+      const result = await workItems.queryByWiql(wiql, undefined, false, top);
+      const ids = (result.workItems ?? []).map((item) => item.id).filter((id): id is number => typeof id === 'number');
+      if (ids.length === 0) {
+        return [];
+      }
+      return await this.getWorkItems(ids, project || undefined);
+    });
+  }
+
+  async getWorkItems(ids: number[], projectName?: string): Promise<WorkItemSummary[]> {
+    const uniqueIds = [...new Set(ids.filter((id) => Number.isFinite(id) && id > 0))];
+    if (uniqueIds.length === 0) {
+      return [];
+    }
+
+    return this.withRetry(async () => {
+      const workItems = await this.getWorkItemClient();
+      const project = projectName || this.getConfig().project || undefined;
+      const items = await workItems.getWorkItems(
+        uniqueIds,
+        [
+          'System.Id',
+          'System.Title',
+          'System.State',
+          'System.WorkItemType',
+          'System.AssignedTo',
+          'System.ChangedDate',
+          'System.TeamProject',
+        ],
+        undefined,
+        undefined,
+        undefined,
+        project
+      ) ?? [];
+
+      const byId = new Map<number, WorkItemSummary>();
+      for (const item of items) {
+        const summary = this.toWorkItemSummary(item, project);
+        if (summary) {
+          byId.set(summary.id, summary);
+        }
+      }
+
+      return uniqueIds.map((id) => byId.get(id)).filter((item): item is WorkItemSummary => Boolean(item));
+    });
+  }
+
+  async createTaskWorkItem(title: string, description?: string, projectName?: string): Promise<WorkItemSummary> {
+    return this.withRetry(async () => {
+      const workItems = await this.getWorkItemClient();
+      const project = projectName || this.getConfig().project;
+      if (!project) {
+        throw new Error('Project name is required to create a work item.');
+      }
+
+      const document: JsonPatchOperation[] = [
+        { op: 0, path: '/fields/System.Title', value: title.trim() },
+      ];
+      if (description?.trim()) {
+        document.push({ op: 0, path: '/fields/System.Description', value: description.trim() });
+      }
+
+      const created = await workItems.createWorkItem(
+        { 'Content-Type': 'application/json-patch+json' },
+        document as any,
+        project,
+        'Task'
+      );
+
+      const summary = this.toWorkItemSummary(created, project);
+      if (!summary) {
+        throw new Error('Work item was created but could not be parsed.');
+      }
+      return summary;
+    });
+  }
+
+  async updateWorkItemState(id: number, state: string, projectName?: string): Promise<WorkItemSummary> {
+    return this.updateWorkItemFields(id, [{ op: 0, path: '/fields/System.State', value: state }], projectName);
+  }
+
+  async addWorkItemNote(id: number, note: string, projectName?: string): Promise<WorkItemSummary> {
+    return this.updateWorkItemFields(id, [{ op: 0, path: '/fields/System.History', value: note.trim() }], projectName);
+  }
+
+  async assignWorkItemToCurrentUser(id: number, projectName?: string): Promise<WorkItemSummary> {
+    const currentUser = await this.getCurrentUserIdentity();
+    const assignee = currentUser.displayName;
+    if (!assignee) {
+      throw new Error('Could not determine the current user name for assignment.');
+    }
+    return this.updateWorkItemFields(id, [{ op: 0, path: '/fields/System.AssignedTo', value: assignee }], projectName);
+  }
+
+  async getCurrentUserIdentity(): Promise<CurrentUserIdentity> {
+    const conn = await this.getConnection();
+    const connectionData = await conn.connect();
+    const user = connectionData.authenticatedUser;
+    const userId = user?.id;
+    if (!userId) {
+      throw new Error('Could not determine current user identity');
+    }
+    return {
+      id: userId,
+      displayName: user?.customDisplayName || user?.providerDisplayName,
+    };
+  }
+
   /**
    * Get PR iterations (each push to the PR creates an iteration).
    */
@@ -543,12 +694,51 @@ export class AzureDevOpsApi {
    * Get the current authenticated user's ID.
    */
   async getCurrentUserId(): Promise<string> {
-    const conn = await this.getConnection();
-    const connectionData = await conn.connect();
-    const userId = connectionData.authenticatedUser?.id;
-    if (!userId) {
-      throw new Error('Could not determine current user ID');
+    return (await this.getCurrentUserIdentity()).id;
+  }
+
+  private async updateWorkItemFields(id: number, document: JsonPatchOperation[], projectName?: string): Promise<WorkItemSummary> {
+    return this.withRetry(async () => {
+      const workItems = await this.getWorkItemClient();
+      const project = projectName || this.getConfig().project || undefined;
+      const updated = await workItems.updateWorkItem(
+        { 'Content-Type': 'application/json-patch+json' },
+        document as any,
+        id,
+        project
+      );
+
+      const summary = this.toWorkItemSummary(updated, project);
+      if (!summary) {
+        throw new Error('Work item was updated but could not be parsed.');
+      }
+      return summary;
+    });
+  }
+
+  private toWorkItemSummary(workItem: WorkItem, projectName?: string): WorkItemSummary | undefined {
+    const id = workItem.id;
+    if (!id) {
+      return undefined;
     }
-    return userId;
+
+    const fields = workItem.fields ?? {};
+    const assignedToField = fields['System.AssignedTo'];
+    const assignedTo = typeof assignedToField === 'string'
+      ? assignedToField
+      : assignedToField?.displayName || assignedToField?.uniqueName;
+    const project = fields['System.TeamProject'] || projectName || this.getConfig().project;
+    const orgUrl = this.getConfig().orgUrl;
+
+    return {
+      id,
+      title: fields['System.Title'] ?? `Work Item ${id}`,
+      state: fields['System.State'] ?? 'Unknown',
+      type: fields['System.WorkItemType'] ?? 'Work Item',
+      assignedTo,
+      changedDate: fields['System.ChangedDate'],
+      projectName: project,
+      url: `${orgUrl}/${encodeURIComponent(project)}/_workitems/edit/${id}`,
+    };
   }
 }

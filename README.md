@@ -1,4 +1,4 @@
-# Azure DevOps Pull Requests for VS Code
+# Azure DevOps Companion for VS Code
 
 Review and manage Azure DevOps pull requests and pipelines directly in VS Code — without leaving your editor.
 
@@ -20,6 +20,8 @@ Review and manage Azure DevOps pull requests and pipelines directly in VS Code �
 
 ### General
 - 🔎 **Project Filtering** — Filter PRs and pipelines by project using the filter icon in each sidebar view title, or the project dropdown in the pipeline dashboard
+- 🧩 **Work Items Linked to Code** — See assigned work, detect work items from the current branch, and surface linked work items inside PR overview
+- ⚡ **Quick Task Updates** — Create task work items, change state, assign to yourself, and add notes without leaving VS Code
 - 🔒 **Secure Authentication** — PAT stored in OS keychain, never in plain text
 
 ## Security
@@ -35,18 +37,19 @@ Your Personal Access Token (PAT) is stored using VS Code's `SecretStorage` API, 
 ## Setup
 
 1. Install the extension
-2. Open the Azure DevOps PR view in the Activity Bar
+2. Open the Azure DevOps Companion view in the Activity Bar
 3. Click **Configure Personal Access Token**
 4. Enter:
    - Your organization URL (`https://dev.azure.com/your-org`)
    - Your project name
-   - A Personal Access Token with **Code (Read & Write)** and **Build (Read)** scopes
+    - A Personal Access Token with **Code (Read & Write)**, **Build (Read)**, and **Work Items (Read & Write)** scopes
 
 ### Creating a PAT
 
 1. Go to `https://dev.azure.com/your-org/_usersSettings/tokens`
 2. Click **New Token**
 3. Select scopes: **Code → Read & Write**, **Build → Read**
+    - Also select: **Work Items → Read & Write**
 4. Copy the token and paste it into the extension prompt
 
 Your PAT needs these scopes (when creating at `https://dev.azure.com/{org}/_usersettings/tokens`):
@@ -55,6 +58,7 @@ Your PAT needs these scopes (when creating at `https://dev.azure.com/{org}/_user
 |---|---|---|
 | Code | Read & Write | List repos, branches, PRs; create PRs; approve PRs; add comments |
 | Build | Read & Execute | List pipeline definitions, view builds/timeline, queue new runs |
+| Work Items | Read & Write | Load assigned work, detect linked work items, create tasks, update state, add notes |
 | Project and Team | Read | List projects in the project filter |
 | Member Entitlement Management | Read | Resolve your user identity (for PR approval) |
 
@@ -95,14 +99,16 @@ src/
 │   └── azureDevOpsApi.ts      # Azure DevOps REST API wrapper
 ├── providers/
 │   ├── pullRequestProvider.ts # PR tree view (with project filter)
-│   └── pipelineProvider.ts    # Pipeline tree view (with project filter)
+│   ├── pipelineProvider.ts    # Pipeline tree view (with project filter)
+│   └── workItemProvider.ts    # My Work tree view for assigned and branch-linked work items
 ├── views/
 │   ├── prDetailPanel.ts       # PR detail webview: tabbed Files/Overview/Comments, native diff editor
 │   ├── createPRPanel.ts       # Create PR webview form
 │   └── pipelineDashboardPanel.ts # Pipeline dashboard: cards, history, timeline, progress bars
 └── utils/
     ├── authManager.ts         # SecretStorage-backed PAT management
-    └── gitHelper.ts           # Git operations (branch, checkout, remote)
+    ├── gitHelper.ts           # Git operations (branch, checkout, remote)
+    └── workItemHelper.ts      # Work item ID inference from branches and PR text
 ```
 
 ## Contributing

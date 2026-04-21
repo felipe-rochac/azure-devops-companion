@@ -55,6 +55,9 @@ export class CreatePRPanel {
         if (message.command === 'loadRepos') {
           await this.loadRepos();
         }
+        if (message.command === 'loadBranches') {
+          await this.loadBranchesForRepo(message.repoId);
+        }
       },
       null,
       this._disposables
@@ -67,10 +70,25 @@ export class CreatePRPanel {
       this._panel.webview.postMessage({ command: 'reposLoaded', repos: repos.map(r => ({ id: r.id, name: r.name })) });
 
       if (repos.length > 0) {
-        const defaultRepo = repos[0];
-        const branches = await this.api.getBranches(defaultRepo.id!);
-        this._panel.webview.postMessage({ command: 'branchesLoaded', branches: branches.map(b => b.name) });
+        // Prefer the repo whose name matches the configured default or the current branch's remote.
+        const config = vscode.workspace.getConfiguration('azureDevOpsPR');
+        const defaultRepoName = config.get<string>('defaultRepository', '').trim().toLowerCase();
+        const matchedRepo = defaultRepoName
+          ? (repos.find(r => r.name?.toLowerCase() === defaultRepoName) ?? repos[0])
+          : repos[0];
+        await this.loadBranchesForRepo(matchedRepo.id!);
+        // Tell the webview which repo to pre-select
+        this._panel.webview.postMessage({ command: 'selectRepo', repoId: matchedRepo.id });
       }
+    } catch (err: any) {
+      this._panel.webview.postMessage({ command: 'error', message: err?.message ?? String(err) });
+    }
+  }
+
+  private async loadBranchesForRepo(repoId: string) {
+    try {
+      const branches = await this.api.getBranches(repoId);
+      this._panel.webview.postMessage({ command: 'branchesLoaded', branches: branches.map(b => b.name) });
     } catch (err: any) {
       this._panel.webview.postMessage({ command: 'error', message: err?.message ?? String(err) });
     }
@@ -195,7 +213,9 @@ export class CreatePRPanel {
 
     function onRepoChange() {
       const repoId = document.getElementById('repoSelect').value;
-      // Could trigger branch reload per repo if needed
+      if (repoId) {
+        vscode.postMessage({ command: 'loadBranches', repoId });
+      }
     }
 
     function submitPR() {
@@ -223,6 +243,11 @@ export class CreatePRPanel {
       if (msg.command === 'reposLoaded') {
         const sel = document.getElementById('repoSelect');
         sel.innerHTML = msg.repos.map(r => \`<option value="\${r.id}">\${r.name}</option>\`).join('');
+      }
+
+      if (msg.command === 'selectRepo') {
+        const sel = document.getElementById('repoSelect');
+        if (msg.repoId) { sel.value = msg.repoId; }
       }
       
       if (msg.command === 'branchesLoaded') {

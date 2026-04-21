@@ -35,7 +35,7 @@ export class PRCommentController {
   constructor(private api: AzureDevOpsApi) {
     this.controller = vscode.comments.createCommentController(
       'azureDevOpsPR.comments',
-      'Azure DevOps PR Comments'
+      'Azure DevOps Companion Comments'
     );
 
     this.controller.commentingRangeProvider = {

@@ -120,7 +120,7 @@ export class PipelineDashboardPanel {
           sourceBranch: d.latestBuild.sourceBranch,
           url: this._buildRunUrl(this._project, d.latestBuild.id),
         } : null,
-        url: d._links?.web?.href,
+        url: this._buildDefinitionUrl(this._project, d.id) || d._links?.web?.href,
       }));
       console.log('[Pipeline Dashboard] Sending pipelinesLoaded with', pipelines.length, 'pipelines');
       this._post({ command: 'pipelinesLoaded', pipelines, project: this._project });
@@ -209,7 +209,7 @@ export class PipelineDashboardPanel {
         sourceBranch: d.latestBuild.sourceBranch,
         url: this._buildRunUrl(project, d.latestBuild.id),
       } : null,
-      url: d._links?.web?.href,
+      url: this._buildDefinitionUrl(project, d.id) || d._links?.web?.href,
     }));
     this._post({ command: 'pipelinesLoaded', pipelines, project });
   }
@@ -236,6 +236,14 @@ export class PipelineDashboardPanel {
       return undefined;
     }
     return `${orgUrl}/${encodeURIComponent(project)}/_build/results?buildId=${buildId}&view=results`;
+  }
+
+  private _buildDefinitionUrl(project: string | undefined, definitionId: number | undefined): string | undefined {
+    const orgUrl = vscode.workspace.getConfiguration('azureDevOpsPR').get<string>('organizationUrl', '').trim().replace(/\/$/, '');
+    if (!orgUrl || !project || !definitionId) {
+      return undefined;
+    }
+    return `${orgUrl}/${encodeURIComponent(project)}/_build?definitionId=${definitionId}`;
   }
 
   private async _handleLoadTimeline(buildId: number, project: string) {
@@ -419,7 +427,7 @@ export class PipelineDashboardPanel {
       <span id="pipelineLabel" class="pipeline-label"></span>
       <input type="text" id="searchBox" class="search-box" placeholder="Filter pipelines..." oninput="onSearch()">
       <button class="btn-icon" onclick="refreshAll()" title="Refresh">\uD83D\uDD04</button>
-      ${pipelinesUrl ? `<button class="btn-icon" onclick="openUrl('${this._escapeHtml(pipelinesUrl)}')" title="Open in Browser">\uD83D\uDD17</button>` : ''}
+      ${pipelinesUrl ? `<button id="headerOpenBtn" class="btn-icon" data-default-url="${this._escapeHtml(pipelinesUrl)}" onclick="openUrl('${this._escapeHtml(pipelinesUrl)}')" title="Open in Browser">\uD83D\uDD17</button>` : ''}
     </div>
   </div>
   <div class="content">

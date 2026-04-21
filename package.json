@@ -1,8 +1,8 @@
 {
-  "name": "azure-devops-pr",
-  "displayName": "Azure DevOps Pull Requests",
-  "description": "Review and manage Azure DevOps Pull Requests directly in VS Code",
-  "version": "0.2.0-beta.13",
+  "name": "azure-devops-companion",
+  "displayName": "Azure DevOps Companion",
+  "description": "Review and manage Azure DevOps pull requests, pipelines, and work items directly in VS Code",
+  "version": "1.1.3",
   "publisher": "kyrone",
   "license": "MIT",
   "engines": {
@@ -22,137 +22,181 @@
     "onStartupFinished",
     "onCommand:azureDevOpsPR.configurePAT",
     "onCommand:azureDevOpsPR.signIn",
+    "onCommand:azureDevOpsPR.createWorkItem",
     "onView:azureDevOpsPR.welcome",
     "onView:azureDevOpsPR.pullRequests",
-    "onView:azureDevOpsPR.pipelines"
+    "onView:azureDevOpsPR.pipelines",
+    "onView:azureDevOpsPR.workItems"
   ],
   "main": "./out/extension.js",
   "icon": "resources/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/felipe-rochac/azure-devops-pr-extension"
+    "url": "https://github.com/felipe-rochac/azure-devops-companion"
   },
   "contributes": {
     "commands": [
       {
         "command": "azureDevOpsPR.signIn",
         "title": "Sign In to Azure DevOps",
-        "category": "Azure DevOps PR"
+        "category": "Azure DevOps Companion"
       },
       {
         "command": "azureDevOpsPR.signOut",
         "title": "Sign Out from Azure DevOps",
-        "category": "Azure DevOps PR"
+        "category": "Azure DevOps Companion"
       },
       {
         "command": "azureDevOpsPR.refresh",
         "title": "Refresh",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "icon": "$(refresh)"
       },
       {
         "command": "azureDevOpsPR.createPR",
         "title": "Create Pull Request",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "icon": "$(git-pull-request-create)"
       },
       {
         "command": "azureDevOpsPR.openPR",
         "title": "Open Pull Request",
-        "category": "Azure DevOps PR"
+        "category": "Azure DevOps Companion"
       },
       {
         "command": "azureDevOpsPR.checkoutBranch",
         "title": "Checkout Branch",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "icon": "$(git-branch)"
       },
       {
         "command": "azureDevOpsPR.approvePR",
         "title": "Approve Pull Request",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "icon": "$(check)"
       },
       {
         "command": "azureDevOpsPR.openPRInBrowser",
         "title": "Open PR in Browser",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "icon": "$(link-external)"
       },
       {
         "command": "azureDevOpsPR.configurePAT",
         "title": "Configure Personal Access Token",
-        "category": "Azure DevOps PR"
+        "category": "Azure DevOps Companion"
       },
       {
         "command": "azureDevOpsPR.openPipelineDashboard",
         "title": "Open Pipeline Dashboard",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "icon": "$(dashboard)"
       },
       {
         "command": "azureDevOpsPR.openPipelineBuild",
         "title": "Open Build in Dashboard",
-        "category": "Azure DevOps PR"
+        "category": "Azure DevOps Companion"
       },
       {
         "command": "azureDevOpsPR.openPipelineBuildInBrowser",
         "title": "Open in Browser",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "icon": "$(link-external)"
       },
       {
         "command": "azureDevOpsPR.selectPRProject",
         "title": "Filter by Project",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "icon": "$(filter)"
       },
       {
         "command": "azureDevOpsPR.selectPipelineProject",
         "title": "Filter by Project",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "icon": "$(filter)"
       },
       {
         "command": "azureDevOpsPR.selectPRRepo",
         "title": "Filter by Repository",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "icon": "$(repo)"
       },
       {
         "command": "azureDevOpsPR.selectPipelineRepo",
         "title": "Filter by Repository",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "icon": "$(repo)"
+      },
+      {
+        "command": "azureDevOpsPR.createWorkItem",
+        "title": "Create Work Item",
+        "category": "Azure DevOps Companion",
+        "icon": "$(issues)"
+      },
+      {
+        "command": "azureDevOpsPR.openWorkItemInBrowser",
+        "title": "Open Work Item in Browser",
+        "category": "Azure DevOps Companion",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "azureDevOpsPR.updateWorkItemState",
+        "title": "Update Work Item State",
+        "category": "Azure DevOps Companion",
+        "icon": "$(symbol-enum)"
+      },
+      {
+        "command": "azureDevOpsPR.addWorkItemNote",
+        "title": "Add Work Item Note",
+        "category": "Azure DevOps Companion",
+        "icon": "$(comment-add)"
+      },
+      {
+        "command": "azureDevOpsPR.assignWorkItemToMe",
+        "title": "Assign Work Item to Me",
+        "category": "Azure DevOps Companion",
+        "icon": "$(account)"
+      },
+      {
+        "command": "azureDevOpsPR.filterWorkItemStatus",
+        "title": "Filter by Status",
+        "category": "Azure DevOps Companion",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "azureDevOpsPR.clearWorkItemStatusFilter",
+        "title": "Clear Status Filter",
+        "category": "Azure DevOps Companion",
+        "icon": "$(filter-filled)"
       },
       {
         "command": "azureDevOpsPR.createComment",
         "title": "Add Comment",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "enablement": "!commentIsEmpty"
       },
       {
         "command": "azureDevOpsPR.replyComment",
         "title": "Reply",
-        "category": "Azure DevOps PR",
+        "category": "Azure DevOps Companion",
         "enablement": "!commentIsEmpty"
       },
       {
         "command": "azureDevOpsPR.resolveComment",
         "title": "✅ Resolve Thread",
-        "category": "Azure DevOps PR"
+        "category": "Azure DevOps Companion"
       },
       {
         "command": "azureDevOpsPR.reactivateComment",
         "title": "🔄 Reactivate Thread",
-        "category": "Azure DevOps PR"
+        "category": "Azure DevOps Companion"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "azure-devops-pr",
-          "title": "Azure DevOps PR",
+          "title": "Azure DevOps Companion",
           "icon": "resources/icons/pr-icon.svg"
         }
       ]
@@ -168,6 +212,11 @@
           "id": "azureDevOpsPR.pipelines",
           "name": "Pipelines",
           "when": "azureDevOpsPR.authenticated"
+        },
+        {
+          "id": "azureDevOpsPR.workItems",
+          "name": "My Work",
+          "when": "azureDevOpsPR.authenticated && azureDevOpsPR.workItemsEnabled"
         },
         {
           "id": "azureDevOpsPR.welcome",
@@ -217,6 +266,26 @@
           "command": "azureDevOpsPR.refresh",
           "when": "view == azureDevOpsPR.pipelines",
           "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.createWorkItem",
+          "when": "view == azureDevOpsPR.workItems",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.filterWorkItemStatus",
+          "when": "view == azureDevOpsPR.workItems",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.clearWorkItemStatusFilter",
+          "when": "view == azureDevOpsPR.workItems",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.refresh",
+          "when": "view == azureDevOpsPR.workItems",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
@@ -244,6 +313,26 @@
           "command": "azureDevOpsPR.openPipelineBuildInBrowser",
           "when": "viewItem == pipelineBuild",
           "group": "pipeline@1"
+        },
+        {
+          "command": "azureDevOpsPR.openWorkItemInBrowser",
+          "when": "viewItem == workItem",
+          "group": "work@1"
+        },
+        {
+          "command": "azureDevOpsPR.updateWorkItemState",
+          "when": "viewItem == workItem",
+          "group": "work@2"
+        },
+        {
+          "command": "azureDevOpsPR.assignWorkItemToMe",
+          "when": "viewItem == workItem",
+          "group": "work@3"
+        },
+        {
+          "command": "azureDevOpsPR.addWorkItemNote",
+          "when": "viewItem == workItem",
+          "group": "work@4"
         }
       ],
       "comments/commentThread/title": [
@@ -274,7 +363,7 @@
     "viewsWelcome": [
       {
         "view": "azureDevOpsPR.welcome",
-        "contents": "Welcome to Azure DevOps Pull Requests!\n\nConnect your Azure DevOps organization to review and manage pull requests.\n\n[Configure Personal Access Token](command:azureDevOpsPR.configurePAT)\n\nNeed help? [View Documentation](https://docs.microsoft.com/azure/devops/integrate/get-started/authentication/pats)"
+        "contents": "Welcome to Azure DevOps Companion!\n\nConnect your Azure DevOps organization to manage pull requests, pipelines, and work items.\n\n[Configure Personal Access Token](command:azureDevOpsPR.configurePAT)\n\nNeed help? [View Documentation](https://docs.microsoft.com/azure/devops/integrate/get-started/authentication/pats)"
       }
     ],
     "configuration": {
@@ -311,6 +400,11 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically detect and apply Azure DevOps project/repository filters from the current workspace git remote when no filters are saved"
+        },
+        "azureDevOpsPR.enableWorkItems": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the My Work view and linked work item actions"
         }
       }
     }

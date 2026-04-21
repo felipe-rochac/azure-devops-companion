@@ -1,12 +1,13 @@
 import * as vscode from 'vscode';
-import { AzureDevOpsApi } from '../api/azureDevOpsApi';
+import { AzureDevOpsApi, WorkItemSummary } from '../api/azureDevOpsApi';
 import { GitPullRequest } from 'azure-devops-node-api/interfaces/GitInterfaces';
 import { GitHelper } from '../utils/gitHelper';
 import { formatCommentContent } from '../utils/commentFormatter';
 import { PRCommentController } from './prCommentController';
+import { inferLinkedWorkItemIds } from '../utils/workItemHelper';
 
 /**
- * Content provider for viewing Azure DevOps PR file contents via virtual documents.
+ * Content provider for viewing Azure DevOps Companion PR file contents via virtual documents.
  * Registers the `ado-pr` scheme so VS Code can open diffs.
  */
 export class ADOFileContentProvider implements vscode.TextDocumentContentProvider {
@@ -40,6 +41,7 @@ export class PRDetailPanel {
   private readonly _panel: vscode.WebviewPanel;
   private _disposables: vscode.Disposable[] = [];
   private _changedFiles: Array<{ path: string; changeType: string; originalPath?: string }> = [];
+  private _linkedWorkItems: WorkItemSummary[] = [];
 
   static createOrShow(
     extensionUri: vscode.Uri,
@@ -119,11 +121,27 @@ export class PRDetailPanel {
           case 'replyToThread':
             await this.handleReplyToThread(message.threadId, message.content);
             break;
+          case 'openWorkItem':
+            await this.handleOpenWorkItem(message.workItemId);
+            break;
+          case 'setWorkItemState':
+            await this.handleSetWorkItemState(message.workItemId);
+            break;
+          case 'addWorkItemNote':
+            await this.handleAddWorkItemNote(message.workItemId);
+            break;
+          case 'assignWorkItemToMe':
+            await this.handleAssignWorkItemToMe(message.workItemId);
+            break;
         }
       },
       null,
       this._disposables
     );
+  }
+
+  async refresh() {
+    await this._update();
   }
 
   async update(pr: GitPullRequest, api: AzureDevOpsApi, gitHelper?: GitHelper, commentController?: PRCommentController) {
@@ -331,6 +349,73 @@ export class PRDetailPanel {
     }
   }
 
+  private async handleOpenWorkItem(workItemId: number) {
+    const workItem = this._linkedWorkItems.find((item) => item.id === workItemId);
+    if (!workItem?.url) {
+      vscode.window.showWarningMessage(`Unable to determine URL for work item #${workItemId}.`);
+      return;
+    }
+    await vscode.env.openExternal(vscode.Uri.parse(workItem.url));
+  }
+
+  private async handleSetWorkItemState(workItemId: number) {
+    const workItem = this._linkedWorkItems.find((item) => item.id === workItemId);
+    if (!workItem) { return; }
+
+    const states = [...new Set([workItem.state, 'New', 'Active', 'Resolved', 'Closed', 'Done', 'Removed'].filter(Boolean))];
+    const picked = await vscode.window.showQuickPick(states.map((state) => ({ label: state })), {
+      placeHolder: `Set state for work item #${workItem.id}`,
+    });
+    if (!picked) { return; }
+
+    try {
+      await this.api.updateWorkItemState(workItem.id, picked.label, workItem.projectName);
+      await this._update();
+    } catch (err: any) {
+      this._panel.webview.postMessage({
+        command: 'error',
+        message: `Failed to update work item state: ${err?.message ?? err}`,
+      });
+    }
+  }
+
+  private async handleAddWorkItemNote(workItemId: number) {
+    const workItem = this._linkedWorkItems.find((item) => item.id === workItemId);
+    if (!workItem) { return; }
+
+    const note = await vscode.window.showInputBox({
+      prompt: `Add a note to work item #${workItem.id}`,
+      placeHolder: 'Progress update, blocker, or implementation note',
+      validateInput: (value) => value.trim() ? null : 'Note cannot be empty',
+    });
+    if (!note) { return; }
+
+    try {
+      await this.api.addWorkItemNote(workItem.id, note, workItem.projectName);
+      await this._update();
+    } catch (err: any) {
+      this._panel.webview.postMessage({
+        command: 'error',
+        message: `Failed to add work item note: ${err?.message ?? err}`,
+      });
+    }
+  }
+
+  private async handleAssignWorkItemToMe(workItemId: number) {
+    const workItem = this._linkedWorkItems.find((item) => item.id === workItemId);
+    if (!workItem) { return; }
+
+    try {
+      await this.api.assignWorkItemToCurrentUser(workItem.id, workItem.projectName);
+      await this._update();
+    } catch (err: any) {
+      this._panel.webview.postMessage({
+        command: 'error',
+        message: `Failed to assign work item: ${err?.message ?? err}`,
+      });
+    }
+  }
+
   private async _update() {
     this._panel.title = `PR #${this.pr.pullRequestId}`;
 
@@ -361,17 +446,40 @@ export class PRDetailPanel {
             16: 'delete', 32: 'undelete', 64: 'branch', 128: 'merge',
             256: 'lock', 512: 'rollback', 1024: 'sourceRename', 2048: 'targetRename',
           };
-          changedFiles = changes.map((c: any) => ({
-            path: c.item?.path ?? c.item?.url ?? 'unknown',
-            changeType: changeTypeMap[c.changeType as number] ?? 'edit',
-            originalPath: c.sourceServerItem,
-          }));
+          changedFiles = changes.map((c: any) => {
+            const changeType = changeTypeMap[c.changeType as number] ?? 'edit';
+            const pathCandidates = changeType === 'delete'
+              ? [c.sourceServerItem, c.item?.path, c.targetServerItem, c.item?.url]
+              : [c.item?.path, c.targetServerItem, c.sourceServerItem, c.item?.url];
+            const resolvedPath = pathCandidates.find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? 'unknown';
+
+            return {
+              path: resolvedPath,
+              changeType,
+              originalPath: c.sourceServerItem,
+            };
+          });
         }
       }
     } catch {
       // Changed files are optional
     }
     this._changedFiles = changedFiles;
+
+    let linkedWorkItems: WorkItemSummary[] = [];
+    try {
+      const linkedIds = inferLinkedWorkItemIds({
+        branchName: this.pr.sourceRefName?.replace('refs/heads/', ''),
+        title: this.pr.title ?? '',
+        description: this.pr.description ?? '',
+      });
+      if (linkedIds.length > 0) {
+        linkedWorkItems = await this.api.getWorkItems(linkedIds, this.pr.repository?.project?.name);
+      }
+    } catch {
+      // Linked work items are optional.
+    }
+    this._linkedWorkItems = linkedWorkItems;
 
     // Fetch current user ID for vote display
     let currentUserId: string | undefined;
@@ -393,10 +501,10 @@ export class PRDetailPanel {
       // Optional
     }
 
-    this._panel.webview.html = this.getHtml(this.pr, threads, changedFiles, currentUserId, conflicts);
+    this._panel.webview.html = this.getHtml(this.pr, threads, changedFiles, currentUserId, conflicts, linkedWorkItems);
   }
 
-  private getHtml(pr: GitPullRequest, threads: any[], changedFiles: Array<{ path: string; changeType: string; originalPath?: string }>, currentUserId?: string, conflicts?: any[]): string {
+  private getHtml(pr: GitPullRequest, threads: any[], changedFiles: Array<{ path: string; changeType: string; originalPath?: string }>, currentUserId?: string, conflicts?: any[], linkedWorkItems: WorkItemSummary[] = []): string {
     const sourceBranch = pr.sourceRefName?.replace('refs/heads/', '') ?? '';
     const targetBranch = pr.targetRefName?.replace('refs/heads/', '') ?? '';
     const author = pr.createdBy?.displayName ?? 'Unknown';
@@ -491,6 +599,22 @@ export class PRDetailPanel {
             <span class="file-type badge-${f.changeType}">${this.esc(f.changeType)}</span>
           </div>`;
         }).join('');
+
+    const workItemsHtml = linkedWorkItems.length === 0
+      ? '<p class="no-comments">No linked work items detected from the source branch, PR title, or description.</p>'
+      : `<div class="work-item-list">${linkedWorkItems.map((workItem) => `
+          <div class="work-item-row">
+            <div class="work-item-main">
+              <div class="work-item-title">#${workItem.id} ${this.esc(workItem.title)}</div>
+              <div class="work-item-meta">${this.esc(workItem.type)} • ${this.esc(workItem.state)}${workItem.assignedTo ? ' • ' + this.esc(workItem.assignedTo) : ''}</div>
+            </div>
+            <div class="work-item-actions">
+              <button class="btn-sm btn-secondary" onclick="openWorkItem(${workItem.id})">Open</button>
+              <button class="btn-sm btn-secondary" onclick="setWorkItemState(${workItem.id})">State</button>
+              <button class="btn-sm btn-secondary" onclick="assignWorkItemToMe(${workItem.id})">Assign to Me</button>
+              <button class="btn-sm btn-secondary" onclick="addWorkItemNote(${workItem.id})">Add Note</button>
+            </div>
+          </div>`).join('')}</div>`;
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -592,6 +716,12 @@ export class PRDetailPanel {
     .merge-ok { background: rgba(40,167,69,0.1); color: #28a745; }
     .merge-conflict { background: rgba(220,53,69,0.1); color: #dc3545; }
     .merge-unknown { background: var(--vscode-editor-inactiveSelectionBackground); }
+    .work-item-list { display: flex; flex-direction: column; gap: 10px; }
+    .work-item-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 4px; background: var(--vscode-editor-inactiveSelectionBackground); }
+    .work-item-main { min-width: 0; }
+    .work-item-title { font-weight: 600; overflow-wrap: anywhere; }
+    .work-item-meta { color: var(--vscode-descriptionForeground); font-size: 0.85em; margin-top: 2px; }
+    .work-item-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
   </style>
 </head>
 <body>
@@ -636,6 +766,10 @@ export class PRDetailPanel {
     <section>
       <h2>Description</h2>
       <div class="description">${description}</div>
+    </section>
+    <section>
+      <h2>Work Items</h2>
+      ${workItemsHtml}
     </section>
     ${reviewerHtml ? `<section><h2>Reviewers</h2><ul class="reviewers">${reviewerHtml}</ul></section>` : ''}
   </div>
@@ -686,6 +820,11 @@ export class PRDetailPanel {
       btn.textContent = '⏳ Checking out...';
       vscode.postMessage({ command: 'reviewWithCopilot' });
     }
+
+    function openWorkItem(workItemId) { vscode.postMessage({ command: 'openWorkItem', workItemId }); }
+    function setWorkItemState(workItemId) { vscode.postMessage({ command: 'setWorkItemState', workItemId }); }
+    function addWorkItemNote(workItemId) { vscode.postMessage({ command: 'addWorkItemNote', workItemId }); }
+    function assignWorkItemToMe(workItemId) { vscode.postMessage({ command: 'assignWorkItemToMe', workItemId }); }
 
     function submitComment() {
       const input = document.getElementById('commentInput');

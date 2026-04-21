@@ -28,17 +28,56 @@
       .replace(/>/g, '&gt;');
   }
 
+  function normalizeStatus(status) {
+    if (typeof status === 'number') return status;
+    if (typeof status !== 'string') return null;
+    var s = status.toLowerCase();
+    if (s === 'inprogress' || s === 'in_progress' || s === 'running') return 1;
+    if (s === 'completed' || s === 'complete') return 2;
+    if (s === 'notstarted' || s === 'not_started' || s === 'queued') return 32;
+    if (s === 'postponed') return 8;
+    if (s === 'cancelling') return 4;
+    return null;
+  }
+
+  function normalizeResult(result) {
+    if (typeof result === 'number') return result;
+    if (typeof result !== 'string') return null;
+    var r = result.toLowerCase();
+    if (r === 'succeeded' || r === 'success') return 2;
+    if (r === 'failed' || r === 'failure') return 8;
+    if (r === 'canceled' || r === 'cancelled') return 32;
+    if (
+      r === 'partiallysucceeded' ||
+      r === 'partiallysucceeded' ||
+      r === 'partial'
+    )
+      return 4;
+    if (r === 'none') return 0;
+    return null;
+  }
+
   function statusBadge(status, result) {
-    if (status === 1)
+    var normalizedStatus = normalizeStatus(status);
+    var normalizedResult = normalizeResult(result);
+    if (normalizedStatus === 1)
       return '<span class="build-badge inprogress">\u23F3 Running</span>';
-    if (result === 2)
+    if (normalizedStatus !== null && normalizedStatus !== 2)
+      return (
+        '<span class="build-badge none">' +
+        escapeHtml(String(status)) +
+        '</span>'
+      );
+    if (normalizedResult === 2)
       return '<span class="build-badge succeeded">\u2705 Succeeded</span>';
-    if (result === 8)
+    if (normalizedResult === 8)
       return '<span class="build-badge failed">\u274C Failed</span>';
-    if (result === 32)
+    if (normalizedResult === 32)
       return '<span class="build-badge canceled">\uD83D\uDEAB Canceled</span>';
-    if (result === 4)
+    if (normalizedResult === 4)
       return '<span class="build-badge partial">\u26A0\uFE0F Partial</span>';
+    if (normalizedStatus === 2)
+      return '<span class="build-badge none">Completed</span>';
     return '<span class="build-badge none">\u2014</span>';
   }
 
@@ -166,11 +205,6 @@
       var viewBtn = document.createElement('button');
       viewBtn.className = 'btn-secondary btn-sm';
       viewBtn.textContent = 'View Runs';
-      viewBtn.onclick = (function (id, name) {
-        return function () {
-          window.viewBuilds(id, name);
-        };
-      })(p.id, p.name);
       actionsDiv.appendChild(viewBtn);
 
       var runBtn = document.createElement('button');
@@ -197,6 +231,12 @@
         })(openUrl);
         actionsDiv.appendChild(linkBtn);
       }
+
+      viewBtn.onclick = (function (id, name, pUrl) {
+        return function () {
+          window.viewBuilds(id, name, pUrl);
+        };
+      })(p.id, p.name, p.url || openUrl);
       card.appendChild(actionsDiv);
       grid.appendChild(card);
     });
@@ -239,7 +279,7 @@
     }
   };
 
-  window.viewBuilds = function (definitionId, name) {
+  window.viewBuilds = function (definitionId, name, pipelineUrl) {
     currentDefinitionId = definitionId;
     document.getElementById('pipelineLabel').textContent =
       '\u2699\uFE0F ' + name;
@@ -249,6 +289,14 @@
     document.getElementById('buildDetailArea').style.display = 'block';
     document.getElementById('buildDetailTitle').textContent =
       name + ' \u2014 Recent Runs';
+    var headerBtn = document.getElementById('headerOpenBtn');
+    if (headerBtn && pipelineUrl) {
+      headerBtn.onclick = (function (url) {
+        return function () {
+          window.openUrl(url);
+        };
+      })(pipelineUrl);
+    }
     document.getElementById('buildsBody').innerHTML = '';
     var loadingRow = document.createElement('tr');
     var loadingCell = document.createElement('td');
@@ -273,6 +321,17 @@
     document.getElementById('breadcrumbSep').classList.remove('visible');
     document.getElementById('buildDetailArea').style.display = 'none';
     document.getElementById('pipelineArea').style.display = 'block';
+    var headerBtn = document.getElementById('headerOpenBtn');
+    if (headerBtn) {
+      var defaultUrl = headerBtn.dataset.defaultUrl;
+      if (defaultUrl) {
+        headerBtn.onclick = (function (url) {
+          return function () {
+            window.openUrl(url);
+          };
+        })(defaultUrl);
+      }
+    }
   };
 
   window.viewTimeline = function (buildId, buildNumber) {

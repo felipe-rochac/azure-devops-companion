@@ -65,7 +65,7 @@ export class GitHelper {
 
     // Fall back to running git in terminal (visible to user)
     const terminal = vscode.window.createTerminal({
-      name: 'Azure DevOps PR',
+      name: 'Azure DevOps Companion',
       cwd,
     });
     terminal.show();
