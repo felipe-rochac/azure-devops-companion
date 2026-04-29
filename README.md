@@ -11,6 +11,7 @@ Review and manage Azure DevOps pull requests and pipelines directly in VS Code �
 - 💬 **View & Add Comments** — Read comment threads and add your own
 - 🔀 **Checkout Branch** — Switch to a PR's source branch with one click
 - ✅ **Approve PRs** — Approve pull requests inline
+- 🤖 **Review with Copilot** — One-click PR review: checks out the branch, opens changed files, and sends a customizable review prompt to Copilot Chat. Choose between Agent mode (applies fixes), Ask mode (read-only), or a plain prompt. Prompt editor with default bug/typo/error detection template built into the PR dashboard.
 
 ### Pipelines
 - 🚀 **Pipeline Dashboard** — Full webview dashboard with pipeline cards, build history, stage/job/task timeline with collapsible sections

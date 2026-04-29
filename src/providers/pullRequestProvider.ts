@@ -30,6 +30,9 @@ export class PullRequestItem extends vscode.TreeItem {
       `Source: ${this.pr.sourceRefName?.replace('refs/heads/', '')}`,
       `Target: ${this.pr.targetRefName?.replace('refs/heads/', '')}`,
     ];
+    if (this.pr.creationDate) {
+      parts.push(`Created: ${new Date(this.pr.creationDate).toLocaleString()}`);
+    }
     if (this.pr.isDraft) {
       parts.push('📝 Draft');
     }
@@ -43,7 +46,17 @@ export class PullRequestItem extends vscode.TreeItem {
     const author = this.pr.createdBy?.displayName ?? '';
     const repo = this.pr.repositoryName ? ` • ${this.pr.repositoryName}` : '';
     const draft = this.pr.isDraft ? ' • Draft' : '';
-    return `${author}${repo}${draft}`;
+    const created = this.pr.creationDate ? ` • ${this.formatShortDate(new Date(this.pr.creationDate))}` : '';
+    return `${author}${repo}${draft}${created}`;
+  }
+
+  private formatShortDate(date: Date): string {
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    if (isToday) {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
 
   private getIcon(): vscode.ThemeIcon {
@@ -86,6 +99,10 @@ export class PullRequestProvider implements vscode.TreeDataProvider<vscode.TreeI
   private selectedProject: string | undefined;
   private selectedRepo: string | undefined;
   private selectedRepoName: string | undefined;
+  private _statusFilter: Set<string> = new Set();
+  private _lastKnownStatuses: Set<string> = new Set();
+  private _userFilter: Set<string> = new Set();
+  private _lastKnownUsers: Map<string, string> = new Map();
 
   constructor(
     private readonly api: AzureDevOpsApi,
@@ -121,6 +138,34 @@ export class PullRequestProvider implements vscode.TreeDataProvider<vscode.TreeI
     return this.selectedRepoName;
   }
 
+  setStatusFilter(statuses: string[]): void {
+    this._statusFilter = new Set(statuses.map((status) => status.toLowerCase()));
+    this.refresh();
+  }
+
+  getStatusFilter(): string[] {
+    return [...this._statusFilter];
+  }
+
+  getAvailableStatuses(): string[] {
+    return [...this._lastKnownStatuses].sort();
+  }
+
+  setUserFilter(userIds: string[]): void {
+    this._userFilter = new Set(userIds.map((userId) => userId.toLowerCase()));
+    this.refresh();
+  }
+
+  getUserFilter(): string[] {
+    return [...this._userFilter];
+  }
+
+  getAvailableUsers(): Array<{ id: string; label: string }> {
+    return [...this._lastKnownUsers.entries()]
+      .map(([id, label]) => ({ id, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+
   getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
     return element;
   }
@@ -139,6 +184,13 @@ export class PullRequestProvider implements vscode.TreeDataProvider<vscode.TreeI
     // Root level: load PRs
     try {
       this.pullRequests = await this.api.getPullRequests(PullRequestStatus.Active, this.selectedProject, this.selectedRepo);
+      this.pullRequests.forEach((pr) => {
+        this._lastKnownStatuses.add(this.classifyStatus(pr));
+        const userId = this.getUserId(pr);
+        if (userId) {
+          this._lastKnownUsers.set(userId, pr.createdBy?.displayName ?? 'Unknown');
+        }
+      });
     } catch (err: any) {
       const errorItem = new vscode.TreeItem(
         'Failed to load pull requests',
@@ -153,13 +205,17 @@ export class PullRequestProvider implements vscode.TreeDataProvider<vscode.TreeI
       return [errorItem];
     }
 
-    if (this.pullRequests.length === 0) {
+    const filteredPullRequests = this.pullRequests
+      .filter((pr) => this._statusFilter.size === 0 || this._statusFilter.has(this.classifyStatus(pr).toLowerCase()))
+      .filter((pr) => this._userFilter.size === 0 || this._userFilter.has(this.getUserId(pr)));
+
+    if (filteredPullRequests.length === 0) {
       const emptyItem = new vscode.TreeItem(
-        'No active pull requests',
+        this.hasActiveFilter() ? 'No pull requests match the active filters' : 'No active pull requests',
         vscode.TreeItemCollapsibleState.None
       );
       emptyItem.iconPath = new vscode.ThemeIcon('info');
-      return [emptyItem];
+      return this.hasActiveFilter() ? [this.createFilterNote(), emptyItem] : [emptyItem];
     }
 
     // Group by: Mine, Needs Review, All Others
@@ -171,7 +227,7 @@ export class PullRequestProvider implements vscode.TreeDataProvider<vscode.TreeI
 
     // We can't easily get the current user without an extra API call, 
     // so group by branch match vs others
-    for (const pr of this.pullRequests) {
+    for (const pr of filteredPullRequests) {
       const sourceBranch = pr.sourceRefName?.replace('refs/heads/', '');
       if (sourceBranch === currentBranch) {
         mine.push(pr);
@@ -196,11 +252,58 @@ export class PullRequestProvider implements vscode.TreeDataProvider<vscode.TreeI
 
     // If only one section, show flat list
     if (sections.length === 1) {
-      return this.pullRequests.map(
+      const flatItems = filteredPullRequests.map(
         pr => new PullRequestItem(pr, vscode.TreeItemCollapsibleState.None)
       );
+      return this.hasActiveFilter() ? [this.createFilterNote(), ...flatItems] : flatItems;
     }
 
-    return sections;
+    return this.hasActiveFilter() ? [this.createFilterNote(), ...sections] : sections;
+  }
+
+  private classifyStatus(pr: PRWithRepo): string {
+    if (pr.isDraft) {
+      return 'Draft';
+    }
+
+    const reviewerVotes = pr.reviewers?.map((reviewer) => reviewer.vote ?? 0) ?? [];
+    if (reviewerVotes.some((vote) => vote <= -10)) {
+      return 'Changes Requested';
+    }
+    if (reviewerVotes.some((vote) => vote >= 10)) {
+      return 'Approved';
+    }
+    return 'Needs Review';
+  }
+
+  private createFilterNote(): vscode.TreeItem {
+    const parts: string[] = [];
+
+    if (this._statusFilter.size > 0) {
+      const statusLabel = [...this._statusFilter]
+        .map((status) => status.split(' ').map((part) => part ? part[0].toUpperCase() + part.slice(1) : part).join(' '))
+        .join(', ');
+      parts.push(`Status: ${statusLabel}`);
+    }
+
+    if (this._userFilter.size > 0) {
+      const userLabel = [...this._userFilter]
+        .map((userId) => this._lastKnownUsers.get(userId) ?? userId)
+        .join(', ');
+      parts.push(`Author: ${userLabel}`);
+    }
+
+    const filterNote = new vscode.TreeItem(`Filtering: ${parts.join(' | ')}`, vscode.TreeItemCollapsibleState.None);
+    filterNote.iconPath = new vscode.ThemeIcon('filter');
+    filterNote.contextValue = 'prFilterActive';
+    return filterNote;
+  }
+
+  private getUserId(pr: PRWithRepo): string {
+    return (pr.createdBy?.id ?? pr.createdBy?.uniqueName ?? '').toLowerCase();
+  }
+
+  private hasActiveFilter(): boolean {
+    return this._statusFilter.size > 0 || this._userFilter.size > 0;
   }
 }

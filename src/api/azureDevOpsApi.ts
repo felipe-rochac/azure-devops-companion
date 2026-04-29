@@ -3,7 +3,7 @@ import * as GitApi from 'azure-devops-node-api/GitApi';
 import * as BuildApi from 'azure-devops-node-api/BuildApi';
 import * as WorkItemTrackingApi from 'azure-devops-node-api/WorkItemTrackingApi';
 import { GitPullRequest, GitPullRequestSearchCriteria, PullRequestStatus, Comment, CommentThread, GitPullRequestChange, GitPullRequestIteration } from 'azure-devops-node-api/interfaces/GitInterfaces';
-import { Build, BuildDefinitionReference, BuildQueryOrder, Timeline } from 'azure-devops-node-api/interfaces/BuildInterfaces';
+import { Build, BuildDefinitionReference, BuildQueryOrder, BuildStatus, Timeline } from 'azure-devops-node-api/interfaces/BuildInterfaces';
 import { WorkItem, Wiql } from 'azure-devops-node-api/interfaces/WorkItemTrackingInterfaces';
 import { JsonPatchOperation } from 'azure-devops-node-api/interfaces/common/VSSInterfaces';
 import { AuthManager } from '../utils/authManager';
@@ -23,6 +23,7 @@ export interface WorkItemSummary {
   state: string;
   type: string;
   assignedTo?: string;
+  createdDate?: string;
   changedDate?: string;
   projectName?: string;
   url: string;
@@ -280,13 +281,13 @@ export class AzureDevOpsApi {
   /**
    * Get recent builds / pipeline runs.
    */
-  async getBuilds(top: number = 20, projectName?: string, repositoryId?: string): Promise<Build[]> {
+  async getBuilds(top: number = 100, projectName?: string, repositoryId?: string): Promise<Build[]> {
     return this.withRetry(async () => {
       const build = await this.getBuildClient();
       const project = projectName || this.getConfig().project;
       return await build.getBuilds(
         project, undefined, undefined, undefined, undefined, undefined, undefined,
-        undefined, undefined, undefined, undefined, undefined, top, undefined,
+        undefined, BuildStatus.All, undefined, undefined, undefined, top, undefined,
         undefined, undefined, undefined, undefined, undefined,
         repositoryId, repositoryId ? 'TfsGit' : undefined
       ) ?? [];
@@ -736,6 +737,7 @@ export class AzureDevOpsApi {
       state: fields['System.State'] ?? 'Unknown',
       type: fields['System.WorkItemType'] ?? 'Work Item',
       assignedTo,
+      createdDate: fields['System.CreatedDate'],
       changedDate: fields['System.ChangedDate'],
       projectName: project,
       url: `${orgUrl}/${encodeURIComponent(project)}/_workitems/edit/${id}`,

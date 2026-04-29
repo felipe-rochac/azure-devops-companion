@@ -16,7 +16,8 @@ export class WorkItemTreeItem extends vscode.TreeItem {
     super(`#${workItem.id} ${workItem.title}`, vscode.TreeItemCollapsibleState.None);
 
     this.contextValue = 'workItem';
-    this.description = [workItem.state, workItem.assignedTo].filter(Boolean).join(' • ');
+    const datePart = workItem.changedDate ? ` • ${WorkItemTreeItem.formatShortDate(new Date(workItem.changedDate))}` : '';
+    this.description = [workItem.state, workItem.assignedTo].filter(Boolean).join(' • ') + datePart;
     this.tooltip = this.buildTooltip();
     this.iconPath = this.getIcon();
     this.command = {
@@ -32,7 +33,18 @@ export class WorkItemTreeItem extends vscode.TreeItem {
       this.workItem.title,
       `State: ${this.workItem.state}`,
       this.workItem.assignedTo ? `Assigned to: ${this.workItem.assignedTo}` : undefined,
+      this.workItem.createdDate ? `Created: ${new Date(this.workItem.createdDate).toLocaleString()}` : undefined,
+      this.workItem.changedDate ? `Last Updated: ${new Date(this.workItem.changedDate).toLocaleString()}` : undefined,
     ].filter(Boolean).join('\n');
+  }
+
+  private static formatShortDate(date: Date): string {
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    if (isToday) {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
 
   private getIcon(): vscode.ThemeIcon {

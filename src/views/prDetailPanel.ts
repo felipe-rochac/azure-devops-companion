@@ -38,18 +38,28 @@ export class ADOFileContentProvider implements vscode.TextDocumentContentProvide
 
 export class PRDetailPanel {
   static currentPanel: PRDetailPanel | undefined;
+  private static _outputChannel: vscode.OutputChannel | undefined;
   private readonly _panel: vscode.WebviewPanel;
   private _disposables: vscode.Disposable[] = [];
   private _changedFiles: Array<{ path: string; changeType: string; originalPath?: string }> = [];
   private _linkedWorkItems: WorkItemSummary[] = [];
+
+  private static log(msg: string) {
+    const line = `[PRDetailPanel] ${msg}`;
+    PRDetailPanel._outputChannel?.appendLine(line);
+    console.log(line);
+  }
 
   static createOrShow(
     extensionUri: vscode.Uri,
     pr: GitPullRequest,
     api: AzureDevOpsApi,
     gitHelper?: GitHelper,
-    commentController?: PRCommentController
+    commentController?: PRCommentController,
+    outputChannel?: vscode.OutputChannel
   ) {
+    if (outputChannel) { PRDetailPanel._outputChannel = outputChannel; }
+    PRDetailPanel.log(`createOrShow called for PR #${pr.pullRequestId}`);
     const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
 
     if (PRDetailPanel.currentPanel) {
@@ -90,7 +100,14 @@ export class PRDetailPanel {
     // Handle messages from webview
     this._panel.webview.onDidReceiveMessage(
       async (message) => {
+        PRDetailPanel.log(`Received webview message: ${JSON.stringify(message)}`);
         switch (message.command) {
+          case 'webviewLog':
+            PRDetailPanel.log(`[Webview] ${message.text}`);
+            return;
+          case 'webviewError':
+            PRDetailPanel.log(`[Webview ERROR] ${message.text}`);
+            return;
           case 'addComment':
             await this.handleAddComment(message.content);
             break;
@@ -107,7 +124,7 @@ export class PRDetailPanel {
             await this.handleOpenAllDiffs();
             break;
           case 'reviewWithCopilot':
-            await this.handleReviewWithCopilot();
+            await this.handleReviewWithCopilot(message.customPrompt, message.agent);
             break;
           case 'vote':
             await this.handleVote(message.vote);
@@ -209,15 +226,17 @@ export class PRDetailPanel {
     }
   }
 
-  private async handleReviewWithCopilot() {
+  private async handleReviewWithCopilot(customPrompt?: string, agentMode?: string) {
     const branchName = this.pr.sourceRefName?.replace('refs/heads/', '');
     if (!branchName) {
       vscode.window.showErrorMessage('Cannot determine source branch for this PR.');
+      this._panel.webview.postMessage({ command: 'reviewStatus', status: 'error' });
       return;
     }
 
     if (!this.gitHelper) {
       vscode.window.showErrorMessage('Git helper not available.');
+      this._panel.webview.postMessage({ command: 'reviewStatus', status: 'error' });
       return;
     }
 
@@ -226,7 +245,10 @@ export class PRDetailPanel {
       { modal: true },
       'Checkout & Open Files'
     );
-    if (confirm !== 'Checkout & Open Files') { return; }
+    if (confirm !== 'Checkout & Open Files') {
+      this._panel.webview.postMessage({ command: 'reviewStatus', status: 'error' });
+      return;
+    }
 
     try {
       this._panel.webview.postMessage({ command: 'reviewStatus', status: 'checking-out' });
@@ -236,6 +258,7 @@ export class PRDetailPanel {
       const workspaceFolders = vscode.workspace.workspaceFolders;
       if (!workspaceFolders || workspaceFolders.length === 0) {
         vscode.window.showErrorMessage('No workspace folder open.');
+        this._panel.webview.postMessage({ command: 'reviewStatus', status: 'error' });
         return;
       }
       const rootUri = workspaceFolders[0].uri;
@@ -256,8 +279,53 @@ export class PRDetailPanel {
       }
 
       this._panel.webview.postMessage({ command: 'reviewStatus', status: 'ready' });
+
+      // Build a focused Copilot review prompt scoped to the changed files
+      const fileList = openedFiles.map(f => `- ${f}`).join('\n');
+      const prTitle = this.pr.title ?? 'Untitled PR';
+      const prDesc = this.pr.description?.substring(0, 500) ?? '';
+
+      const defaultPrompt = [
+        `Review the following pull request changes for errors, bugs, typos, and mistakes ONLY. Do NOT suggest style improvements, refactoring, or enhancements.`,
+        ``,
+        `For each issue found, apply the fix directly to the file. Only fix actual bugs, errors, typos, and mistakes — do not refactor or change style.`,
+        `After applying all fixes, provide a summary of what was changed and why.`,
+        `If no issues are found, say "No bugs, errors, typos, or mistakes found."`,
+      ].join('\n');
+
+      const userPrompt = customPrompt?.trim() || defaultPrompt;
+
+      const contextBlock = [
+        `PR: "${prTitle}"`,
+        prDesc ? `Description: ${prDesc}` : '',
+        ``,
+        `Changed files:`,
+        fileList,
+      ].filter(l => l !== undefined).join('\n');
+
+      const fullPrompt = `${userPrompt}\n\n${contextBlock}`;
+      const mode = agentMode || 'agent';
+
+      // Always copy prompt to clipboard as a reliable fallback
+      await vscode.env.clipboard.writeText(fullPrompt);
+
+      // Try to open Copilot Chat and pre-fill the prompt
+      // The chat.open command accepts { query, isPartialQuery } but
+      // agent mode selection is not directly supported via command args.
+      // We open chat with the prompt pre-filled; the user can switch modes in the chat UI.
+      try {
+        const query = mode === 'ask' ? `@workspace ${fullPrompt}` : fullPrompt;
+        await vscode.commands.executeCommand('workbench.action.chat.open', { query, isPartialQuery: false });
+      } catch {
+        try {
+          await vscode.commands.executeCommand('workbench.action.chat.open');
+        } catch {
+          // Chat not available at all
+        }
+      }
+
       vscode.window.showInformationMessage(
-        `✅ Checked out "${branchName}" and opened ${openedFiles.length} files. Use Copilot Chat with @workspace to review the PR.`
+        `✅ Opened ${openedFiles.length} files and sent prompt to Copilot Chat. Prompt is also in your clipboard (Ctrl+V) if needed.`
       );
     } catch (err: any) {
       this._panel.webview.postMessage({ command: 'reviewStatus', status: 'error' });
@@ -501,7 +569,9 @@ export class PRDetailPanel {
       // Optional
     }
 
+    PRDetailPanel.log(`Setting webview HTML. Files: ${changedFiles.length}, Threads: ${threads.length}`);
     this._panel.webview.html = this.getHtml(this.pr, threads, changedFiles, currentUserId, conflicts, linkedWorkItems);
+    PRDetailPanel.log('Webview HTML set successfully');
   }
 
   private getHtml(pr: GitPullRequest, threads: any[], changedFiles: Array<{ path: string; changeType: string; originalPath?: string }>, currentUserId?: string, conflicts?: any[], linkedWorkItems: WorkItemSummary[] = []): string {
@@ -725,6 +795,7 @@ export class PRDetailPanel {
   </style>
 </head>
 <body>
+  <div id="wv-debug"></div>
   <h1>${isDraft} PR #${pr.pullRequestId}: ${this.esc(pr.title ?? '')}</h1>
   <div class="meta">by <strong>${this.esc(author)}</strong> · ${created}</div>
 
@@ -738,6 +809,23 @@ export class PRDetailPanel {
     <button class="btn-primary" onclick="openInBrowser()">🔗 Open in Browser</button>
     <button class="btn-secondary" onclick="refresh()">🔄 Refresh</button>
     <button class="btn-copilot" onclick="reviewWithCopilot()" id="btnCopilot">🤖 Review with Copilot</button>
+    <button class="btn-secondary" onclick="toggleCopilotPrompt()" id="btnTogglePrompt" title="Customize the Copilot review prompt">⚙️</button>
+  </div>
+
+  <div id="copilotPromptSection" style="margin-bottom:16px;">
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+      <label for="copilotAgent" style="font-size:0.9em;font-weight:500;">Mode:</label>
+      <select id="copilotAgent" style="background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:4px;padding:4px 8px;font-size:0.9em;font-family:inherit;">
+        <option value="agent" selected>Agent (can apply fixes)</option>
+        <option value="ask">Ask (@workspace, read-only)</option>
+        <option value="none">None (just open chat)</option>
+      </select>
+    </div>
+    <textarea id="copilotPrompt" placeholder="Customize your Copilot review prompt..." style="width:100%;min-height:120px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:4px;padding:8px;font-family:inherit;font-size:inherit;box-sizing:border-box;resize:vertical;"></textarea>
+    <div style="display:flex;gap:6px;margin-top:6px;">
+      <button class="btn-secondary" onclick="resetCopilotPrompt()" style="font-size:0.85em;">↺ Reset to Default</button>
+      <span style="font-size:0.8em;color:var(--vscode-descriptionForeground);align-self:center;">Leave empty to use the default prompt. File list is always appended automatically.</span>
+    </div>
   </div>
 
   <div class="vote-section">
@@ -801,32 +889,88 @@ export class PRDetailPanel {
   </div>
 
   <script>
-    const vscode = acquireVsCodeApi();
+    /* ---- Debug infrastructure ---- */
+    var _debugLog = [];
+    function wvLog(msg) {
+      var ts = new Date().toISOString().substr(11,12);
+      var entry = '[' + ts + '] ' + msg;
+      _debugLog.push(entry);
+      console.log('[PRDetail Webview]', msg);
+      try { vscode.postMessage({ command: 'webviewLog', text: msg }); } catch(e) {}
+    }
+    function wvError(msg) {
+      var ts = new Date().toISOString().substr(11,12);
+      var entry = '[' + ts + '] ERROR: ' + msg;
+      _debugLog.push(entry);
+      console.error('[PRDetail Webview]', msg);
+      try { vscode.postMessage({ command: 'webviewError', text: msg }); } catch(e) {}
+      /* Show error visually in the panel */
+      var errDiv = document.createElement('div');
+      errDiv.style.cssText = 'background:#dc3545;color:#fff;padding:8px 12px;margin:4px 0;border-radius:4px;font-family:monospace;font-size:0.82em;white-space:pre-wrap;';
+      errDiv.textContent = entry;
+      var container = document.getElementById('wv-debug');
+      if (container) { container.appendChild(errDiv); }
+      else { document.body.insertBefore(errDiv, document.body.firstChild); }
+    }
+
+    window.onerror = function(msg, url, line, col, error) {
+      wvError('Uncaught: ' + msg + ' (line ' + line + ', col ' + col + ')');
+      return false;
+    };
+    window.onunhandledrejection = function(event) {
+      wvError('Unhandled promise rejection: ' + (event.reason || event));
+    };
+
+    var vscode;
+    try {
+      vscode = acquireVsCodeApi();
+      wvLog('acquireVsCodeApi succeeded');
+    } catch(e) {
+      wvError('acquireVsCodeApi failed: ' + e.message);
+    }
 
     function switchTab(id) {
+      wvLog('switchTab: ' + id);
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
       document.getElementById('tab-' + id).classList.add('active');
       document.querySelector('.tab[data-tab="' + id + '"]').classList.add('active');
     }
 
-    function openInBrowser() { vscode.postMessage({ command: 'openInBrowser' }); }
-    function refresh() { vscode.postMessage({ command: 'refresh' }); }
-    function openDiff(index) { vscode.postMessage({ command: 'openDiff', index }); }
-    function openAllDiffs() { vscode.postMessage({ command: 'openAllDiffs' }); }
+    function openInBrowser() { wvLog('openInBrowser clicked'); vscode.postMessage({ command: 'openInBrowser' }); }
+    function refresh() { wvLog('refresh clicked'); vscode.postMessage({ command: 'refresh' }); }
+    function openDiff(index) { wvLog('openDiff clicked: ' + index); vscode.postMessage({ command: 'openDiff', index }); }
+    function openAllDiffs() { wvLog('openAllDiffs clicked'); vscode.postMessage({ command: 'openAllDiffs' }); }
+    var defaultCopilotPrompt = 'Review the following pull request changes for errors, bugs, typos, and mistakes ONLY. Do NOT suggest style improvements, refactoring, or enhancements.' + String.fromCharCode(10) + String.fromCharCode(10) + 'For each issue found, apply the fix directly to the file. Only fix actual bugs, errors, typos, and mistakes \\u2014 do not refactor or change style.' + String.fromCharCode(10) + 'After applying all fixes, provide a summary of what was changed and why.' + String.fromCharCode(10) + 'If no issues are found, say "No bugs, errors, typos, or mistakes found."';
+
+    function toggleCopilotPrompt() {
+      var section = document.getElementById('copilotPromptSection');
+      section.style.display = section.style.display === 'none' ? 'block' : 'none';
+    }
+
+    function resetCopilotPrompt() {
+      wvLog('resetCopilotPrompt clicked');
+      document.getElementById('copilotPrompt').value = defaultCopilotPrompt;
+    }
+
     function reviewWithCopilot() {
+      wvLog('reviewWithCopilot clicked');
       var btn = document.getElementById('btnCopilot');
       btn.disabled = true;
       btn.textContent = '⏳ Checking out...';
-      vscode.postMessage({ command: 'reviewWithCopilot' });
+      var customPrompt = (document.getElementById('copilotPrompt').value || '').trim();
+      var agent = document.getElementById('copilotAgent').value;
+      wvLog('Sending reviewWithCopilot message. Agent: ' + agent + ', promptLen: ' + customPrompt.length);
+      vscode.postMessage({ command: 'reviewWithCopilot', customPrompt: customPrompt, agent: agent });
     }
 
-    function openWorkItem(workItemId) { vscode.postMessage({ command: 'openWorkItem', workItemId }); }
-    function setWorkItemState(workItemId) { vscode.postMessage({ command: 'setWorkItemState', workItemId }); }
-    function addWorkItemNote(workItemId) { vscode.postMessage({ command: 'addWorkItemNote', workItemId }); }
-    function assignWorkItemToMe(workItemId) { vscode.postMessage({ command: 'assignWorkItemToMe', workItemId }); }
+    function openWorkItem(workItemId) { wvLog('openWorkItem: ' + workItemId); vscode.postMessage({ command: 'openWorkItem', workItemId }); }
+    function setWorkItemState(workItemId) { wvLog('setWorkItemState: ' + workItemId); vscode.postMessage({ command: 'setWorkItemState', workItemId }); }
+    function addWorkItemNote(workItemId) { wvLog('addWorkItemNote: ' + workItemId); vscode.postMessage({ command: 'addWorkItemNote', workItemId }); }
+    function assignWorkItemToMe(workItemId) { wvLog('assignWorkItemToMe: ' + workItemId); vscode.postMessage({ command: 'assignWorkItemToMe', workItemId }); }
 
     function submitComment() {
+      wvLog('submitComment clicked');
       const input = document.getElementById('commentInput');
       const content = input.value.trim();
       if (!content) { return; }
@@ -835,14 +979,17 @@ export class PRDetailPanel {
     }
 
     function vote(v) {
+      wvLog('vote: ' + v);
       vscode.postMessage({ command: 'vote', vote: v });
     }
 
     function resolveThread(threadId) {
+      wvLog('resolveThread: ' + threadId);
       vscode.postMessage({ command: 'resolveThread', threadId: threadId });
     }
 
     function reactivateThread(threadId) {
+      wvLog('reactivateThread: ' + threadId);
       vscode.postMessage({ command: 'reactivateThread', threadId: threadId });
     }
 
@@ -870,6 +1017,7 @@ export class PRDetailPanel {
 
     window.addEventListener('message', event => {
       const msg = event.data;
+      wvLog('Received message from extension: ' + JSON.stringify(msg));
       if (msg.command === 'commentAdded') {
         document.getElementById('commentInput').value = '';
         document.getElementById('commentInput').disabled = false;
@@ -881,6 +1029,7 @@ export class PRDetailPanel {
         document.getElementById('commentInput').disabled = false;
       }
       if (msg.command === 'reviewStatus') {
+        wvLog('reviewStatus: ' + msg.status);
         var btn = document.getElementById('btnCopilot');
         if (msg.status === 'ready') {
           btn.disabled = false;
@@ -891,6 +1040,9 @@ export class PRDetailPanel {
         }
       }
     });
+
+    /* ---- Init complete ---- */
+    wvLog('All functions defined. Webview script init complete.');
   </script>
 </body>
 </html>`;

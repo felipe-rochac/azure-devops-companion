@@ -145,23 +145,21 @@ async function setupExtension(
     workProject?: string;
   }
   const savedFilters = context.globalState.get<SavedFilters>('filters', {});
-  if (savedFilters.prProject) { prProvider.setProject(savedFilters.prProject); }
-  if (savedFilters.prRepo) { prProvider.setRepository(savedFilters.prRepo, savedFilters.prRepoName); }
-  if (savedFilters.pipelineProject) { pipelineProvider.setProject(savedFilters.pipelineProject); }
-  if (savedFilters.pipelineRepo) { pipelineProvider.setRepository(savedFilters.pipelineRepo, savedFilters.pipelineRepoName); }
-  if (savedFilters.workProject) { workProvider.setProject(savedFilters.workProject); }
 
   const startupConfig = vscode.workspace.getConfiguration('azureDevOpsPR');
   const autoDetectFromWorkspace = startupConfig.get<boolean>('autoDetectFromWorkspace', true);
 
-  // Auto-detect project/repo from current workspace remote when filters are not set.
-  if (autoDetectFromWorkspace && !savedFilters.prProject && !savedFilters.pipelineProject) {
+  // Always auto-detect project/repo from the workspace git remote so panels
+  // only load data for the current repository instead of the entire org.
+  let autoDetected = false;
+  if (autoDetectFromWorkspace) {
     try {
       const ctx = await gitHelper.detectAzureDevOpsContext();
       if (ctx?.projectName) {
         prProvider.setProject(ctx.projectName);
         pipelineProvider.setProject(ctx.projectName);
         workProvider.setProject(ctx.projectName);
+        autoDetected = true;
       }
 
       if (ctx?.projectName && ctx?.repoName) {
@@ -175,6 +173,15 @@ async function setupExtension(
     } catch (err: any) {
       output.appendLine(`Auto-detect project/repo failed: ${err?.message ?? err}`);
     }
+  }
+
+  // Fall back to saved filters only when auto-detection did not succeed.
+  if (!autoDetected) {
+    if (savedFilters.prProject) { prProvider.setProject(savedFilters.prProject); }
+    if (savedFilters.prRepo) { prProvider.setRepository(savedFilters.prRepo, savedFilters.prRepoName); }
+    if (savedFilters.pipelineProject) { pipelineProvider.setProject(savedFilters.pipelineProject); }
+    if (savedFilters.pipelineRepo) { pipelineProvider.setRepository(savedFilters.pipelineRepo, savedFilters.pipelineRepoName); }
+    if (savedFilters.workProject) { workProvider.setProject(savedFilters.workProject); }
   }
 
   function saveFilters() {
@@ -430,9 +437,111 @@ async function setupExtension(
       vscode.window.showInformationMessage('Work item status filter cleared.');
     }),
 
+    vscode.commands.registerCommand('azureDevOpsPR.filterPRStatus', async () => {
+      const available = prProvider.getAvailableStatuses();
+      const activeFilter = prProvider.getStatusFilter().map((s) => s.toLowerCase());
+      const statusOptions = (available.length > 0 ? available : ['Needs Review', 'Approved', 'Changes Requested', 'Draft'])
+        .map((status) => ({
+          label: status,
+          picked: activeFilter.length === 0 || activeFilter.includes(status.toLowerCase()),
+        }));
+
+      const picked = await vscode.window.showQuickPick(statusOptions, {
+        placeHolder: 'Select pull request statuses to show (deselect all to clear filter)',
+        canPickMany: true,
+        title: 'Filter Pull Requests by Status',
+      });
+
+      if (picked === undefined) { return; }
+      const allSelected = picked.length === statusOptions.length || picked.length === 0;
+      prProvider.setStatusFilter(allSelected ? [] : picked.map((item) => item.label));
+
+      if (allSelected) {
+        vscode.window.showInformationMessage('Pull request status filter cleared.');
+      } else {
+        vscode.window.showInformationMessage(`Showing pull requests with status: ${picked.map((item) => item.label).join(', ')}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.clearPRStatusFilter', () => {
+      prProvider.setStatusFilter([]);
+      vscode.window.showInformationMessage('Pull request status filter cleared.');
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.filterPRUser', async () => {
+      const availableUsers = prProvider.getAvailableUsers();
+      if (availableUsers.length === 0) {
+        vscode.window.showInformationMessage('No pull request authors available yet. Refresh pull requests and try again.');
+        return;
+      }
+
+      const activeFilter = new Set(prProvider.getUserFilter().map((userId) => userId.toLowerCase()));
+      const userOptions = availableUsers.map((user) => ({
+        label: user.label,
+        description: user.id,
+        picked: activeFilter.size === 0 || activeFilter.has(user.id.toLowerCase()),
+      }));
+
+      const picked = await vscode.window.showQuickPick(userOptions, {
+        placeHolder: 'Select pull request authors to show (deselect all to clear filter)',
+        canPickMany: true,
+        title: 'Filter Pull Requests by Author',
+      });
+
+      if (picked === undefined) { return; }
+      const allSelected = picked.length === userOptions.length || picked.length === 0;
+      const selectedIds = picked
+        .map((item) => item.description)
+        .filter((value): value is string => !!value);
+
+      prProvider.setUserFilter(allSelected ? [] : selectedIds);
+
+      if (allSelected) {
+        vscode.window.showInformationMessage('Pull request author filter cleared.');
+      } else {
+        vscode.window.showInformationMessage(`Showing pull requests by: ${picked.map((item) => item.label).join(', ')}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.clearPRUserFilter', () => {
+      prProvider.setUserFilter([]);
+      vscode.window.showInformationMessage('Pull request author filter cleared.');
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.filterPipelineStatus', async () => {
+      const available = pipelineProvider.getAvailableStatuses();
+      const activeFilter = pipelineProvider.getStatusFilter().map((s) => s.toLowerCase());
+      const statusOptions = (available.length > 0 ? available : ['Running', 'Succeeded', 'Failed', 'Canceled', 'Partial', 'Unknown'])
+        .map((status) => ({
+          label: status,
+          picked: activeFilter.length === 0 || activeFilter.includes(status.toLowerCase()),
+        }));
+
+      const picked = await vscode.window.showQuickPick(statusOptions, {
+        placeHolder: 'Select pipeline statuses to show (deselect all to clear filter)',
+        canPickMany: true,
+        title: 'Filter Pipelines by Status',
+      });
+
+      if (picked === undefined) { return; }
+      const allSelected = picked.length === statusOptions.length || picked.length === 0;
+      pipelineProvider.setStatusFilter(allSelected ? [] : picked.map((item) => item.label));
+
+      if (allSelected) {
+        vscode.window.showInformationMessage('Pipeline status filter cleared.');
+      } else {
+        vscode.window.showInformationMessage(`Showing pipelines with status: ${picked.map((item) => item.label).join(', ')}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.clearPipelineStatusFilter', () => {
+      pipelineProvider.setStatusFilter([]);
+      vscode.window.showInformationMessage('Pipeline status filter cleared.');
+    }),
+
     vscode.commands.registerCommand('azureDevOpsPR.openPR', async (item) => {
       if (item?.pr) {
-        PRDetailPanel.createOrShow(context.extensionUri, item.pr, api, gitHelper, prCommentController);
+        PRDetailPanel.createOrShow(context.extensionUri, item.pr, api, gitHelper, prCommentController, output);
       }
     }),
 
@@ -526,6 +635,38 @@ async function setupExtension(
         return;
       }
       vscode.env.openExternal(vscode.Uri.parse(url));
+    }),
+
+    vscode.commands.registerCommand('azureDevOpsPR.copyImageName', async (item: any) => {
+      const config = vscode.workspace.getConfiguration();
+      let template: string = config.get('azureDevOpsPR.containerImageTemplate', '').trim();
+
+      if (!template) {
+        const action = await vscode.window.showWarningMessage(
+          'No container image template configured. Set "azureDevOpsPR.containerImageTemplate" in settings.\n' +
+          'Example: myregistry.azurecr.io/{definitionName}:{buildNumber}',
+          'Open Settings'
+        );
+        if (action === 'Open Settings') {
+          vscode.commands.executeCommand('workbench.action.openSettings', 'azureDevOpsPR.containerImageTemplate');
+        }
+        return;
+      }
+
+      const build = item?.build ?? item;
+      const buildNumber: string = build?.buildNumber ?? '';
+      const definitionName: string = (build?.definition?.name ?? '').toLowerCase().replace(/[^a-z0-9._-]/g, '-');
+      const branch: string = (build?.sourceBranch ?? '').replace(/^refs\/heads\//, '');
+      const shortCommit: string = (build?.sourceVersion ?? '').substring(0, 8);
+
+      const imageName = template
+        .replace(/\{buildNumber\}/g, buildNumber)
+        .replace(/\{definitionName\}/g, definitionName)
+        .replace(/\{branch\}/g, branch)
+        .replace(/\{shortCommit\}/g, shortCommit);
+
+      await vscode.env.clipboard.writeText(imageName);
+      vscode.window.showInformationMessage(`Copied: ${imageName}`);
     }),
 
     vscode.commands.registerCommand('azureDevOpsPR.openPRInBrowser', (item: any) => {

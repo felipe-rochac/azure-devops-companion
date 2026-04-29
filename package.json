@@ -2,7 +2,7 @@
   "name": "azure-devops-companion",
   "displayName": "Azure DevOps Companion",
   "description": "Review and manage Azure DevOps pull requests, pipelines, and work items directly in VS Code",
-  "version": "1.1.3",
+  "version": "1.2.2",
   "publisher": "kyrone",
   "license": "MIT",
   "engines": {
@@ -104,6 +104,12 @@
         "icon": "$(link-external)"
       },
       {
+        "command": "azureDevOpsPR.copyImageName",
+        "title": "Copy Image Name",
+        "category": "Azure DevOps Companion",
+        "icon": "$(copy)"
+      },
+      {
         "command": "azureDevOpsPR.selectPRProject",
         "title": "Filter by Project",
         "category": "Azure DevOps Companion",
@@ -122,10 +128,46 @@
         "icon": "$(repo)"
       },
       {
+        "command": "azureDevOpsPR.filterPRStatus",
+        "title": "Filter by Status",
+        "category": "Azure DevOps Companion",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "azureDevOpsPR.clearPRStatusFilter",
+        "title": "Clear Status Filter",
+        "category": "Azure DevOps Companion",
+        "icon": "$(filter-filled)"
+      },
+      {
+        "command": "azureDevOpsPR.filterPRUser",
+        "title": "Filter by Author",
+        "category": "Azure DevOps Companion",
+        "icon": "$(account)"
+      },
+      {
+        "command": "azureDevOpsPR.clearPRUserFilter",
+        "title": "Clear Author Filter",
+        "category": "Azure DevOps Companion",
+        "icon": "$(filter-filled)"
+      },
+      {
         "command": "azureDevOpsPR.selectPipelineRepo",
         "title": "Filter by Repository",
         "category": "Azure DevOps Companion",
         "icon": "$(repo)"
+      },
+      {
+        "command": "azureDevOpsPR.filterPipelineStatus",
+        "title": "Filter by Status",
+        "category": "Azure DevOps Companion",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "azureDevOpsPR.clearPipelineStatusFilter",
+        "title": "Clear Status Filter",
+        "category": "Azure DevOps Companion",
+        "icon": "$(filter-filled)"
       },
       {
         "command": "azureDevOpsPR.createWorkItem",
@@ -243,6 +285,26 @@
           "group": "navigation"
         },
         {
+          "command": "azureDevOpsPR.filterPRStatus",
+          "when": "view == azureDevOpsPR.pullRequests",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.clearPRStatusFilter",
+          "when": "view == azureDevOpsPR.pullRequests",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.filterPRUser",
+          "when": "view == azureDevOpsPR.pullRequests",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.clearPRUserFilter",
+          "when": "view == azureDevOpsPR.pullRequests",
+          "group": "navigation"
+        },
+        {
           "command": "azureDevOpsPR.createPR",
           "when": "view == azureDevOpsPR.pullRequests",
           "group": "navigation"
@@ -259,6 +321,16 @@
         },
         {
           "command": "azureDevOpsPR.selectPipelineRepo",
+          "when": "view == azureDevOpsPR.pipelines",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.filterPipelineStatus",
+          "when": "view == azureDevOpsPR.pipelines",
+          "group": "navigation"
+        },
+        {
+          "command": "azureDevOpsPR.clearPipelineStatusFilter",
           "when": "view == azureDevOpsPR.pipelines",
           "group": "navigation"
         },
@@ -313,6 +385,11 @@
           "command": "azureDevOpsPR.openPipelineBuildInBrowser",
           "when": "viewItem == pipelineBuild",
           "group": "pipeline@1"
+        },
+        {
+          "command": "azureDevOpsPR.copyImageName",
+          "when": "viewItem == pipelineBuild",
+          "group": "pipeline@2"
         },
         {
           "command": "azureDevOpsPR.openWorkItemInBrowser",
@@ -405,6 +482,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable the My Work view and linked work item actions"
+        },
+        "azureDevOpsPR.containerImageTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Template for the container image name copied by 'Copy Image Name'. Supports: {buildNumber}, {definitionName}, {branch}, {shortCommit}. Example: myregistry.azurecr.io/{definitionName}:{buildNumber}"
         }
       }
     }

@@ -1,3 +1,30 @@
+## [1.2.2] - 2026-04-29
+### Added
+- Pipelines: triggered and completed dates shown in tree item descriptions and tooltips
+- Pull Requests: created date shown in tree item descriptions and tooltips
+- Work Items: last updated date in descriptions, created and updated dates in tooltips
+- Comprehensive debug logging in PR detail panel (Output panel + webview error banners)
+
+### Fixed
+- **All PR dashboard buttons broken** — a `\n` escape in the webview template literal produced literal newlines inside a JS string, causing a silent parse error that disabled all script execution
+
+## [1.2.1] - 2026-04-28
+### Added
+- **Review with Copilot**: one-click PR review that checks out the branch, opens changed files, and sends a focused review prompt to Copilot Chat
+- Customizable review prompt: editable textarea in the PR dashboard with a default bug/error/typo-only prompt
+- Mode selector: choose Agent (can apply fixes), Ask (@workspace, read-only), or None (just open chat)
+- Prompt is always copied to clipboard as a fallback if Copilot Chat doesn't auto-populate
+
+### Fixed
+- Review with Copilot button staying disabled after cancelling the confirmation dialog
+- Copilot Chat not receiving the review prompt in certain VS Code versions
+
+## [1.1.4] - 2026-04-21
+### Added
+- Pull Requests view: status filter and clear-status-filter actions in the view toolbar
+- Pipelines view: status filter and clear-status-filter actions in the view toolbar
+- Active filter note rows in PR and Pipeline trees while filters are applied
+
 # Changelog
 
 All notable changes to this extension will be documented here.
