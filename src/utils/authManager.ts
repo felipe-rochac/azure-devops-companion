@@ -1,49 +1,74 @@
 import * as vscode from 'vscode';
 
-const PAT_SECRET_KEY = 'azureDevOpsPR.pat';
+const AUTH_DISABLED_KEY = 'azureDevOpsPR.oauth.disabled';
+const ADO_SCOPE = '499b84ac-1321-427f-aa17-267ca6975798/.default';
+const MICROSOFT_PROVIDER_ID = 'microsoft';
 
 /**
- * AuthManager handles PAT storage using VS Code's SecretStorage API.
+ * AuthManager handles Microsoft Entra authentication via VS Code's
+ * built-in Microsoft auth provider.
  *
- * SecretStorage is backed by:
- * - macOS: Keychain
- * - Windows: Windows Credential Manager
- * - Linux: libsecret / GNOME Keyring
- *
- * PATs are NEVER stored in plain text, settings.json, or workspace files.
+ * Access tokens are managed by the VS Code auth provider. This class stores
+ * only an extension-level disconnect flag in SecretStorage.
  */
 export class AuthManager {
   constructor(private readonly secrets: vscode.SecretStorage) {}
 
   /**
-   * Save PAT securely. The PAT is stored in OS keychain via SecretStorage.
+   * Start interactive sign-in to acquire an Azure DevOps access token.
    */
-  async saveCredentials(pat: string): Promise<void> {
-    if (!pat || pat.trim().length === 0) {
-      throw new Error('PAT cannot be empty');
+  async signInInteractive(): Promise<void> {
+    await this.setDisconnected(false);
+    const session = await this.getSession(true);
+    if (!session?.accessToken) {
+      throw new Error('Sign in failed. Could not acquire an Azure DevOps access token.');
     }
-    await this.secrets.store(PAT_SECRET_KEY, pat.trim());
   }
 
   /**
-   * Retrieve the stored PAT. Returns undefined if not set.
+   * Retrieve the current Azure DevOps access token from VS Code auth session.
    */
-  async getPAT(): Promise<string | undefined> {
-    return await this.secrets.get(PAT_SECRET_KEY);
+  async getAccessToken(): Promise<string | undefined> {
+    if (await this.isDisconnected()) {
+      return undefined;
+    }
+
+    const session = await this.getSession(false);
+    return session?.accessToken;
   }
 
   /**
-   * Check if user is authenticated (has a stored PAT).
+   * Check if user is authenticated.
    */
   async isAuthenticated(): Promise<boolean> {
-    const pat = await this.getPAT();
-    return !!pat && pat.length > 0;
+    const token = await this.getAccessToken();
+    return !!token;
   }
 
   /**
-   * Remove stored credentials.
+   * Disconnect the extension from Azure DevOps.
    */
   async clearCredentials(): Promise<void> {
-    await this.secrets.delete(PAT_SECRET_KEY);
+    await this.setDisconnected(true);
+  }
+
+  private async getSession(createIfNone: boolean): Promise<vscode.AuthenticationSession | undefined> {
+    return vscode.authentication.getSession(
+      MICROSOFT_PROVIDER_ID,
+      [ADO_SCOPE],
+      { createIfNone }
+    );
+  }
+
+  private async isDisconnected(): Promise<boolean> {
+    return (await this.secrets.get(AUTH_DISABLED_KEY)) === 'true';
+  }
+
+  private async setDisconnected(disconnected: boolean): Promise<void> {
+    if (disconnected) {
+      await this.secrets.store(AUTH_DISABLED_KEY, 'true');
+      return;
+    }
+    await this.secrets.delete(AUTH_DISABLED_KEY);
   }
 }

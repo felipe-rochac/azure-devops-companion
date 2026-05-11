@@ -23,45 +23,31 @@ Review and manage Azure DevOps pull requests and pipelines directly in VS Code �
 - 🔎 **Project Filtering** — Filter PRs and pipelines by project using the filter icon in each sidebar view title, or the project dropdown in the pipeline dashboard
 - 🧩 **Work Items Linked to Code** — See assigned work, detect work items from the current branch, and surface linked work items inside PR overview
 - ⚡ **Quick Task Updates** — Create task work items, change state, assign to yourself, and add notes without leaving VS Code
-- 🔒 **Secure Authentication** — PAT stored in OS keychain, never in plain text
+- 🔒 **Secure Authentication** — Microsoft Entra sign-in via VS Code account session
 
 ## Security
 
-Your Personal Access Token (PAT) is stored using VS Code's `SecretStorage` API, which is backed by:
+Authentication uses VS Code's built-in **Microsoft** authentication provider and requests an Azure DevOps access token via Microsoft Entra ID.
 
-- **macOS**: Keychain Access
-- **Windows**: Windows Credential Manager  
-- **Linux**: libsecret / GNOME Keyring
-
-**The PAT is never stored in `settings.json`, workspace files, or any plain-text location.**
+- Tokens are managed by VS Code's account/session infrastructure.
+- The extension stores only a lightweight local "disconnected" flag in `SecretStorage`.
+- No PAT is required.
 
 ## Setup
 
 1. Install the extension
 2. Open the Azure DevOps Companion view in the Activity Bar
-3. Click **Configure Personal Access Token**
+3. Click **Configure Organization and Sign In**
 4. Enter:
    - Your organization URL (`https://dev.azure.com/your-org`)
    - Your project name
-    - A Personal Access Token with **Code (Read & Write)**, **Build (Read)**, and **Work Items (Read & Write)** scopes
+5. Complete the Microsoft sign-in prompt shown by VS Code
 
-### Creating a PAT
+### Authentication Notes
 
-1. Go to `https://dev.azure.com/your-org/_usersSettings/tokens`
-2. Click **New Token**
-3. Select scopes: **Code → Read & Write**, **Build → Read**
-    - Also select: **Work Items → Read & Write**
-4. Copy the token and paste it into the extension prompt
-
-Your PAT needs these scopes (when creating at `https://dev.azure.com/{org}/_usersettings/tokens`):
-
-| PAT Scope | Required Level | Extension Feature |
-|---|---|---|
-| Code | Read & Write | List repos, branches, PRs; create PRs; approve PRs; add comments |
-| Build | Read & Execute | List pipeline definitions, view builds/timeline, queue new runs |
-| Work Items | Read & Write | Load assigned work, detect linked work items, create tasks, update state, add notes |
-| Project and Team | Read | List projects in the project filter |
-| Member Entitlement Management | Read | Resolve your user identity (for PR approval) |
+- This extension now uses delegated OAuth access through Microsoft Entra.
+- PAT restrictions in Azure DevOps organizations do not block this sign-in flow.
+- If your tenant enforces conditional access, sign-in may require MFA/device compliance.
 
 ## Configuration
 
@@ -107,7 +93,7 @@ src/
 │   ├── createPRPanel.ts       # Create PR webview form
 │   └── pipelineDashboardPanel.ts # Pipeline dashboard: cards, history, timeline, progress bars
 └── utils/
-    ├── authManager.ts         # SecretStorage-backed PAT management
+    ├── authManager.ts         # Microsoft Entra auth session management
     ├── gitHelper.ts           # Git operations (branch, checkout, remote)
     └── workItemHelper.ts      # Work item ID inference from branches and PR text
 ```
@@ -115,8 +101,8 @@ src/
 ## Contributing
 
 PRs welcome! Please keep security in mind:
-- Never log or expose the PAT
-- Always use `SecretStorage` for sensitive values
+- Never log or expose access tokens
+- Always use `SecretStorage` for extension secrets
 - Validate all inputs before sending to the API
 
 ## License

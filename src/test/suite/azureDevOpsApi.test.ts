@@ -15,14 +15,41 @@ function createMockSecretStorage(): vscode.SecretStorage {
   };
 }
 
+function createMockSession(accessToken: string): vscode.AuthenticationSession {
+  return {
+    id: 'session-id',
+    accessToken,
+    account: {
+      id: 'account-id',
+      label: 'Test User',
+    },
+    scopes: ['499b84ac-1321-427f-aa17-267ca6975798/.default'],
+  };
+}
+
 suite('AzureDevOpsApi Tests', () => {
   let api: AzureDevOpsApi;
   let authManager: AuthManager;
+  let getSessionStub: (createIfNone: boolean) => vscode.AuthenticationSession | undefined;
+  let originalGetSession: typeof vscode.authentication.getSession;
+
+  suiteSetup(() => {
+    originalGetSession = vscode.authentication.getSession;
+  });
 
   setup(async () => {
+    getSessionStub = () => undefined;
+    (vscode.authentication as any).getSession = async (_providerId: string, _scopes: string[], options: { createIfNone?: boolean }) => {
+      return getSessionStub(!!options?.createIfNone);
+    };
+
     const mockSecrets = createMockSecretStorage();
     authManager = new AuthManager(mockSecrets);
     api = new AzureDevOpsApi(authManager);
+  });
+
+  teardown(() => {
+    (vscode.authentication as any).getSession = originalGetSession;
   });
 
   test('getPullRequests throws when not authenticated', async () => {
@@ -33,7 +60,7 @@ suite('AzureDevOpsApi Tests', () => {
   });
 
   test('getPullRequests throws when org URL not configured', async () => {
-    await authManager.saveCredentials('fake-pat-token-12345');
+    getSessionStub = () => createMockSession('fake-oauth-token-12345');
     // With no org URL configured, it should throw
     const config = vscode.workspace.getConfiguration('azureDevOpsPR');
     const orgUrl = config.get<string>('organizationUrl', '');
@@ -70,7 +97,7 @@ suite('AzureDevOpsApi Tests', () => {
   });
 
   test('approvePullRequest validates required PR fields', async () => {
-    await authManager.saveCredentials('fake-pat-token-12345');
+    getSessionStub = () => createMockSession('fake-oauth-token-12345');
     const config = vscode.workspace.getConfiguration('azureDevOpsPR');
     const orgUrl = config.get<string>('organizationUrl', '');
     if (orgUrl) {

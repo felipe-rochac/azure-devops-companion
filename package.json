@@ -2,7 +2,7 @@
   "name": "azure-devops-companion",
   "displayName": "Azure DevOps Companion",
   "description": "Review and manage Azure DevOps pull requests, pipelines, and work items directly in VS Code",
-  "version": "1.2.2",
+  "version": "1.3.6",
   "publisher": "kyrone",
   "license": "MIT",
   "engines": {
@@ -83,7 +83,7 @@
       },
       {
         "command": "azureDevOpsPR.configurePAT",
-        "title": "Configure Personal Access Token",
+        "title": "Configure Organization and Sign In",
         "category": "Azure DevOps Companion"
       },
       {
@@ -440,7 +440,7 @@
     "viewsWelcome": [
       {
         "view": "azureDevOpsPR.welcome",
-        "contents": "Welcome to Azure DevOps Companion!\n\nConnect your Azure DevOps organization to manage pull requests, pipelines, and work items.\n\n[Configure Personal Access Token](command:azureDevOpsPR.configurePAT)\n\nNeed help? [View Documentation](https://docs.microsoft.com/azure/devops/integrate/get-started/authentication/pats)"
+        "contents": "Welcome to Azure DevOps Companion!\n\nConnect your Azure DevOps organization to manage pull requests, pipelines, and work items.\n\n[Configure Organization and Sign In](command:azureDevOpsPR.configurePAT)\n\nNeed help? [View Documentation](https://learn.microsoft.com/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate#entra)"
       }
     ],
     "configuration": {

@@ -4,52 +4,76 @@ import { AuthManager } from '../../utils/authManager';
 
 suite('AuthManager Tests', () => {
   let authManager: AuthManager;
+  let getSessionStub: (createIfNone: boolean) => vscode.AuthenticationSession | undefined;
+  let originalGetSession: typeof vscode.authentication.getSession;
 
-  // Use a real extension context secret storage for integration-style tests
   suiteSetup(async () => {
-    // We can get context from the extension itself in a real test run
-    // For unit tests, we mock SecretStorage
+    originalGetSession = vscode.authentication.getSession;
+  });
+
+  setup(async () => {
+    getSessionStub = () => undefined;
+    (vscode.authentication as any).getSession = async (_providerId: string, _scopes: string[], options: { createIfNone?: boolean }) => {
+      return getSessionStub(!!options?.createIfNone);
+    };
+
     const mockSecrets = createMockSecretStorage();
     authManager = new AuthManager(mockSecrets);
   });
 
-  test('isAuthenticated returns false when no PAT stored', async () => {
+  teardown(() => {
+    (vscode.authentication as any).getSession = originalGetSession;
+  });
+
+  test('isAuthenticated returns false when no session exists', async () => {
     const result = await authManager.isAuthenticated();
     assert.strictEqual(result, false);
   });
 
-  test('saveCredentials and isAuthenticated', async () => {
-    await authManager.saveCredentials('test-pat-12345');
+  test('signInInteractive enables authenticated state when session is returned', async () => {
+    getSessionStub = (createIfNone) => createIfNone ? createMockSession('token-1') : undefined;
+
+    await authManager.signInInteractive();
+
+    getSessionStub = () => createMockSession('token-1');
     const result = await authManager.isAuthenticated();
     assert.strictEqual(result, true);
   });
 
-  test('getPAT returns stored value', async () => {
-    await authManager.saveCredentials('my-secret-pat');
-    const pat = await authManager.getPAT();
-    assert.strictEqual(pat, 'my-secret-pat');
+  test('getAccessToken returns current access token', async () => {
+    getSessionStub = () => createMockSession('token-abc');
+    const token = await authManager.getAccessToken();
+    assert.strictEqual(token, 'token-abc');
   });
 
-  test('clearCredentials removes PAT', async () => {
-    await authManager.saveCredentials('some-pat');
+  test('clearCredentials disconnects extension auth', async () => {
+    getSessionStub = () => createMockSession('token-xyz');
     await authManager.clearCredentials();
+
     const result = await authManager.isAuthenticated();
     assert.strictEqual(result, false);
   });
 
-  test('saveCredentials trims whitespace', async () => {
-    await authManager.saveCredentials('  padded-pat  ');
-    const pat = await authManager.getPAT();
-    assert.strictEqual(pat, 'padded-pat');
-  });
-
-  test('saveCredentials throws on empty string', async () => {
+  test('signInInteractive throws when no token can be acquired', async () => {
+    getSessionStub = () => undefined;
     await assert.rejects(
-      () => authManager.saveCredentials(''),
-      /PAT cannot be empty/
+      () => authManager.signInInteractive(),
+      /Sign in failed/
     );
   });
 });
+
+function createMockSession(accessToken: string): vscode.AuthenticationSession {
+  return {
+    id: 'session-id',
+    accessToken,
+    account: {
+      id: 'account-id',
+      label: 'Test User',
+    },
+    scopes: ['499b84ac-1321-427f-aa17-267ca6975798/.default'],
+  };
+}
 
 /**
  * In-memory mock for vscode.SecretStorage — no OS keychain needed in tests.

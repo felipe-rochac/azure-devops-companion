@@ -9,6 +9,11 @@
   var PAGE_SIZE = 50;
   var displayCount = PAGE_SIZE;
   var dataReceived = false;
+  var viewMode = 'flat'; // 'flat' or 'grouped'
+  var favorites = new Set();
+  var releaseDefinitions = [];
+  var releasesLoaded = false;
+  var currentReleaseDefId = null;
 
   function escapeHtml(s) {
     if (!s) return '';
@@ -149,111 +154,203 @@
       return;
     }
     empty.style.display = 'none';
-    var showing = filtered.slice(0, displayCount);
-    document.getElementById('pipelineCount').textContent =
-      'Showing ' + showing.length + ' of ' + filtered.length + ' pipelines';
 
-    // Build cards using DOM to avoid any innerHTML quote issues
-    grid.innerHTML = '';
-    showing.forEach(function (p) {
-      var card = document.createElement('div');
-      card.className = 'pipeline-card';
-
-      var latest = p.latestBuild;
-      var badgeHtml = latest
-        ? statusBadge(latest.status, latest.result)
-        : '<span class="build-badge none">No runs</span>';
-
-      var headerDiv = document.createElement('div');
-      headerDiv.className = 'pipeline-card-header';
-      var nameDiv = document.createElement('div');
-      var nameInner = document.createElement('div');
-      nameInner.className = 'pipeline-name';
-      nameInner.textContent = p.name || '';
-      nameDiv.appendChild(nameInner);
-      if (p.path && p.path !== '\\') {
-        var pathDiv = document.createElement('div');
-        pathDiv.className = 'pipeline-path';
-        pathDiv.textContent = p.path;
-        nameDiv.appendChild(pathDiv);
-      }
-      headerDiv.appendChild(nameDiv);
-      var badgeSpan = document.createElement('span');
-      badgeSpan.innerHTML = badgeHtml;
-      headerDiv.appendChild(badgeSpan);
-      card.appendChild(headerDiv);
-
-      var bodyDiv = document.createElement('div');
-      bodyDiv.className = 'pipeline-card-body';
-      if (latest) {
-        var infoDiv = document.createElement('div');
-        infoDiv.className = 'build-info';
-        infoDiv.textContent =
-          '#' +
-          (latest.buildNumber || '') +
-          ' \u00B7 ' +
-          (latest.sourceBranch || '').replace('refs/heads/', '') +
-          ' \u00B7 ' +
-          timeAgo(latest.finishTime);
-        bodyDiv.appendChild(infoDiv);
-      }
-      card.appendChild(bodyDiv);
-
-      var actionsDiv = document.createElement('div');
-      actionsDiv.className = 'pipeline-card-actions';
-
-      var viewBtn = document.createElement('button');
-      viewBtn.className = 'btn-secondary btn-sm';
-      viewBtn.textContent = 'View Runs';
-      actionsDiv.appendChild(viewBtn);
-
-      var runBtn = document.createElement('button');
-      runBtn.className = 'btn-primary btn-sm';
-      runBtn.textContent = '\u25B6 Run';
-      runBtn.onclick = (function (id, name) {
-        return function () {
-          window.openRunModal(id, name);
-        };
-      })(p.id, p.name);
-      actionsDiv.appendChild(runBtn);
-
-      var openUrl =
-        p.latestBuild && p.latestBuild.url ? p.latestBuild.url : p.url;
-      if (openUrl) {
-        var linkBtn = document.createElement('button');
-        linkBtn.className = 'btn-icon btn-sm';
-        linkBtn.textContent = '\uD83D\uDD17';
-        linkBtn.title = 'Open in browser';
-        linkBtn.onclick = (function (url) {
-          return function () {
-            window.openUrl(url);
-          };
-        })(openUrl);
-        actionsDiv.appendChild(linkBtn);
-      }
-
-      viewBtn.onclick = (function (id, name, pUrl) {
-        return function () {
-          window.viewBuilds(id, name, pUrl);
-        };
-      })(p.id, p.name, p.url || openUrl);
-      card.appendChild(actionsDiv);
-      grid.appendChild(card);
+    // Separate favorites
+    var favPipelines = filtered.filter(function (p) {
+      return favorites.has(p.id);
+    });
+    var otherPipelines = filtered.filter(function (p) {
+      return !favorites.has(p.id);
     });
 
-    if (filtered.length > displayCount) {
-      var more = document.createElement('div');
-      more.className = 'load-more-bar';
-      var moreBtn = document.createElement('button');
-      moreBtn.className = 'btn-secondary';
-      moreBtn.textContent =
-        'Show more (' + (filtered.length - displayCount) + ' remaining)';
-      moreBtn.onclick = function () {
-        window.loadMore();
-      };
-      more.appendChild(moreBtn);
-      grid.appendChild(more);
+    grid.innerHTML = '';
+
+    if (viewMode === 'grouped') {
+      // Show favorites first
+      if (favPipelines.length > 0) {
+        appendGroup(grid, '\u2B50 Favorites', favPipelines, true);
+      }
+      // Group remaining by path
+      var groups = {};
+      otherPipelines.forEach(function (p) {
+        var groupKey =
+          p.path && p.path !== '\\' ? p.path.replace(/^\\/, '') : 'Other';
+        if (!groups[groupKey]) {
+          groups[groupKey] = [];
+        }
+        groups[groupKey].push(p);
+      });
+      var sortedKeys = Object.keys(groups).sort();
+      sortedKeys.forEach(function (key) {
+        appendGroup(grid, key, groups[key], false);
+      });
+      var total = filtered.length;
+      document.getElementById('pipelineCount').textContent =
+        total +
+        ' pipeline' +
+        (total !== 1 ? 's' : '') +
+        ' in ' +
+        (sortedKeys.length + (favPipelines.length > 0 ? 1 : 0)) +
+        ' group' +
+        (sortedKeys.length + (favPipelines.length > 0 ? 1 : 0) !== 1
+          ? 's'
+          : '');
+    } else {
+      // Flat view: favorites on top
+      var ordered = favPipelines.concat(otherPipelines);
+      var showing = ordered.slice(0, displayCount);
+      document.getElementById('pipelineCount').textContent =
+        'Showing ' + showing.length + ' of ' + ordered.length + ' pipelines';
+      showing.forEach(function (p) {
+        grid.appendChild(createPipelineCard(p));
+      });
+
+      if (ordered.length > displayCount) {
+        var more = document.createElement('div');
+        more.className = 'load-more-bar';
+        var moreBtn = document.createElement('button');
+        moreBtn.className = 'btn-secondary';
+        moreBtn.textContent =
+          'Show more (' + (ordered.length - displayCount) + ' remaining)';
+        moreBtn.onclick = function () {
+          window.loadMore();
+        };
+        more.appendChild(moreBtn);
+        grid.appendChild(more);
+      }
     }
+  }
+
+  function appendGroup(container, title, pipelines, expanded) {
+    var header = document.createElement('div');
+    header.className = 'group-header';
+    header.innerHTML =
+      '<span class="chevron' +
+      (expanded ? '' : ' collapsed') +
+      '">\u25BC</span>' +
+      '<span>' +
+      escapeHtml(title) +
+      ' (' +
+      pipelines.length +
+      ')</span>';
+    header.onclick = function () {
+      var content = header.nextElementSibling;
+      var chev = header.querySelector('.chevron');
+      if (content) content.classList.toggle('hidden');
+      if (chev) chev.classList.toggle('collapsed');
+    };
+    container.appendChild(header);
+    var content = document.createElement('div');
+    content.className =
+      'group-content pipeline-grid' + (expanded ? '' : ' hidden');
+    pipelines.forEach(function (p) {
+      content.appendChild(createPipelineCard(p));
+    });
+    container.appendChild(content);
+  }
+
+  function createPipelineCard(p) {
+    var card = document.createElement('div');
+    card.className = 'pipeline-card';
+
+    var latest = p.latestBuild;
+    var badgeHtml = latest
+      ? statusBadge(latest.status, latest.result)
+      : '<span class="build-badge none">No runs</span>';
+
+    var headerDiv = document.createElement('div');
+    headerDiv.className = 'pipeline-card-header';
+
+    // Favorite button
+    var favBtn = document.createElement('button');
+    favBtn.className = 'fav-btn' + (favorites.has(p.id) ? ' favorited' : '');
+    favBtn.textContent = favorites.has(p.id) ? '\u2B50' : '\u2606';
+    favBtn.title = favorites.has(p.id)
+      ? 'Remove from favorites'
+      : 'Add to favorites';
+    favBtn.onclick = (function (id) {
+      return function (e) {
+        e.stopPropagation();
+        vscode.postMessage({ command: 'toggleFavorite', definitionId: id });
+      };
+    })(p.id);
+    headerDiv.appendChild(favBtn);
+
+    var nameDiv = document.createElement('div');
+    nameDiv.style.flex = '1';
+    nameDiv.style.minWidth = '0';
+    var nameInner = document.createElement('div');
+    nameInner.className = 'pipeline-name';
+    nameInner.textContent = p.name || '';
+    nameDiv.appendChild(nameInner);
+    if (p.path && p.path !== '\\') {
+      var pathDiv = document.createElement('div');
+      pathDiv.className = 'pipeline-path';
+      pathDiv.textContent = p.path;
+      nameDiv.appendChild(pathDiv);
+    }
+    headerDiv.appendChild(nameDiv);
+    var badgeSpan = document.createElement('span');
+    badgeSpan.innerHTML = badgeHtml;
+    headerDiv.appendChild(badgeSpan);
+    card.appendChild(headerDiv);
+
+    var bodyDiv = document.createElement('div');
+    bodyDiv.className = 'pipeline-card-body';
+    if (latest) {
+      var infoDiv = document.createElement('div');
+      infoDiv.className = 'build-info';
+      infoDiv.textContent =
+        '#' +
+        (latest.buildNumber || '') +
+        ' \u00B7 ' +
+        (latest.sourceBranch || '').replace('refs/heads/', '') +
+        ' \u00B7 ' +
+        timeAgo(latest.finishTime);
+      bodyDiv.appendChild(infoDiv);
+    }
+    card.appendChild(bodyDiv);
+
+    var actionsDiv = document.createElement('div');
+    actionsDiv.className = 'pipeline-card-actions';
+
+    var viewBtn = document.createElement('button');
+    viewBtn.className = 'btn-secondary btn-sm';
+    viewBtn.textContent = 'View Runs';
+    actionsDiv.appendChild(viewBtn);
+
+    var runBtn = document.createElement('button');
+    runBtn.className = 'btn-primary btn-sm';
+    runBtn.textContent = '\u25B6 Run';
+    runBtn.onclick = (function (id, name) {
+      return function () {
+        window.openRunModal(id, name);
+      };
+    })(p.id, p.name);
+    actionsDiv.appendChild(runBtn);
+
+    var openUrl =
+      p.latestBuild && p.latestBuild.url ? p.latestBuild.url : p.url;
+    if (openUrl) {
+      var linkBtn = document.createElement('button');
+      linkBtn.className = 'btn-icon btn-sm';
+      linkBtn.textContent = '\uD83D\uDD17';
+      linkBtn.title = 'Open in browser';
+      linkBtn.onclick = (function (url) {
+        return function () {
+          window.openUrl(url);
+        };
+      })(openUrl);
+      actionsDiv.appendChild(linkBtn);
+    }
+
+    viewBtn.onclick = (function (id, name, pUrl) {
+      return function () {
+        window.viewBuilds(id, name, pUrl);
+      };
+    })(p.id, p.name, p.url || openUrl);
+    card.appendChild(actionsDiv);
+    return card;
   }
 
   window.loadMore = function () {
@@ -359,10 +456,19 @@
 
   window.openRunModal = function (definitionId, name) {
     document.getElementById('runPipelineName').value = name;
-    document.getElementById('runBranch').value = '';
+    var sel = document.getElementById('runBranch');
+    sel.innerHTML = '<option value="">-- loading branches... --</option>';
+    document.getElementById('runParamsArea').innerHTML =
+      '<div class="loading">Loading pipeline parameters...</div>';
     document.getElementById('runModal').classList.add('visible');
     document.getElementById('runModal').dataset.definitionId =
       String(definitionId);
+    vscode.postMessage({ command: 'loadBranches' });
+    vscode.postMessage({
+      command: 'loadPipelineParameters',
+      definitionId: definitionId,
+      project: currentProject,
+    });
   };
 
   window.closeRunModal = function () {
@@ -374,10 +480,56 @@
       document.getElementById('runModal').dataset.definitionId,
     );
     var branch = document.getElementById('runBranch').value.trim();
+    // Collect variable overrides
+    var parameters = {};
+    var hasParams = false;
+    document.querySelectorAll('.run-variable').forEach(function (el) {
+      var val = el.value.trim();
+      if (val !== '' && val !== el.dataset.defaultValue) {
+        parameters[el.dataset.name] = val;
+        hasParams = true;
+      }
+    });
+    // Collect template parameter overrides
+    var templateParameters = {};
+    var hasTemplateParams = false;
+    // Text inputs and selects
+    document.querySelectorAll('.run-template-param').forEach(function (el) {
+      var name = el.dataset.name;
+      var val;
+      if (el.type === 'checkbox') {
+        val = el.checked ? 'true' : 'false';
+      } else if (el.tagName === 'SELECT') {
+        val = el.value;
+      } else {
+        val = el.value.trim();
+      }
+      if (val !== '' && val !== el.dataset.defaultValue) {
+        templateParameters[name] = val;
+        hasTemplateParams = true;
+      }
+    });
+    // Radio buttons
+    var radioNames = {};
+    document
+      .querySelectorAll('.run-template-param-radio:checked')
+      .forEach(function (el) {
+        var name = el.dataset.name;
+        if (!radioNames[name]) {
+          radioNames[name] = true;
+          var val = el.value;
+          if (val !== el.dataset.defaultValue) {
+            templateParameters[name] = val;
+            hasTemplateParams = true;
+          }
+        }
+      });
     vscode.postMessage({
       command: 'queueBuild',
       definitionId: defId,
       branch: branch,
+      parameters: hasParams ? parameters : undefined,
+      templateParameters: hasTemplateParams ? templateParameters : undefined,
       project: currentProject,
     });
     window.closeRunModal();
@@ -386,6 +538,260 @@
   window.openUrl = function (url) {
     vscode.postMessage({ command: 'openInBrowser', url: url });
   };
+
+  window.setViewMode = function (mode) {
+    viewMode = mode;
+    document.getElementById('viewFlat').className =
+      'btn-secondary btn-sm' + (mode === 'flat' ? ' active' : '');
+    document.getElementById('viewGrouped').className =
+      'btn-secondary btn-sm' + (mode === 'grouped' ? ' active' : '');
+    displayCount = PAGE_SIZE;
+    renderPipelines();
+  };
+
+  window.switchViewTab = function (tabId) {
+    document.querySelectorAll('.view-tab').forEach(function (t) {
+      t.classList.remove('active');
+    });
+    document.querySelectorAll('.view-tab-content').forEach(function (t) {
+      t.classList.remove('active');
+    });
+    document
+      .querySelector('.view-tab[data-tab="' + tabId + '"]')
+      .classList.add('active');
+    document.getElementById('tab-' + tabId).classList.add('active');
+
+    if (tabId === 'releases' && !releasesLoaded && currentProject) {
+      releasesLoaded = true;
+      vscode.postMessage({
+        command: 'loadReleaseDefinitions',
+        project: currentProject,
+      });
+    }
+  };
+
+  // --- Release functions ---
+  function renderReleaseDefinitions(definitions) {
+    var grid = document.getElementById('releaseDefGrid');
+    var empty = document.getElementById('releaseEmptyMsg');
+    document.getElementById('releaseLoadingMsg').style.display = 'none';
+    document.getElementById('releaseArea').style.display = 'block';
+    document.getElementById('releaseDetailArea').style.display = 'none';
+
+    if (!definitions || definitions.length === 0) {
+      grid.innerHTML = '';
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+    grid.innerHTML = '';
+
+    definitions.forEach(function (d) {
+      var card = document.createElement('div');
+      card.className = 'pipeline-card';
+
+      var headerDiv = document.createElement('div');
+      headerDiv.className = 'pipeline-card-header';
+      var nameDiv = document.createElement('div');
+      nameDiv.style.flex = '1';
+      var nameInner = document.createElement('div');
+      nameInner.className = 'pipeline-name';
+      nameInner.textContent = d.name || '';
+      nameDiv.appendChild(nameInner);
+      if (d.path && d.path !== '\\') {
+        var pathDiv = document.createElement('div');
+        pathDiv.className = 'pipeline-path';
+        pathDiv.textContent = d.path;
+        nameDiv.appendChild(pathDiv);
+      }
+      headerDiv.appendChild(nameDiv);
+      card.appendChild(headerDiv);
+
+      var actionsDiv = document.createElement('div');
+      actionsDiv.className = 'pipeline-card-actions';
+
+      var viewBtn = document.createElement('button');
+      viewBtn.className = 'btn-secondary btn-sm';
+      viewBtn.textContent = 'View Releases';
+      viewBtn.onclick = (function (id, name) {
+        return function () {
+          window.viewReleases(id, name);
+        };
+      })(d.id, d.name);
+      actionsDiv.appendChild(viewBtn);
+
+      var createBtn = document.createElement('button');
+      createBtn.className = 'btn-primary btn-sm';
+      createBtn.textContent = '\uD83D\uDE80 Create Release';
+      createBtn.onclick = (function (id, name) {
+        return function () {
+          window.openReleaseModal(id, name);
+        };
+      })(d.id, d.name);
+      actionsDiv.appendChild(createBtn);
+
+      if (d.url) {
+        var linkBtn = document.createElement('button');
+        linkBtn.className = 'btn-icon btn-sm';
+        linkBtn.textContent = '\uD83D\uDD17';
+        linkBtn.title = 'Open in browser';
+        linkBtn.onclick = (function (url) {
+          return function () {
+            window.openUrl(url);
+          };
+        })(d.url);
+        actionsDiv.appendChild(linkBtn);
+      }
+
+      card.appendChild(actionsDiv);
+      grid.appendChild(card);
+    });
+  }
+
+  window.viewReleases = function (definitionId, name) {
+    currentReleaseDefId = definitionId;
+    document.getElementById('releaseArea').style.display = 'none';
+    document.getElementById('releaseDetailArea').style.display = 'block';
+    document.getElementById('releaseDetailTitle').textContent =
+      name + ' \u2014 Recent Releases';
+    document.getElementById('releasesList').innerHTML =
+      '<div class="loading">Loading releases...</div>';
+    vscode.postMessage({
+      command: 'loadReleases',
+      definitionId: definitionId,
+      project: currentProject,
+    });
+  };
+
+  window.backToReleaseDefinitions = function () {
+    currentReleaseDefId = null;
+    document.getElementById('releaseDetailArea').style.display = 'none';
+    document.getElementById('releaseArea').style.display = 'block';
+  };
+
+  window.openReleaseModal = function (definitionId, name) {
+    document.getElementById('releaseDefName').value = name;
+    document.getElementById('releaseDescription').value = '';
+    document.getElementById('releaseArtifactsArea').innerHTML =
+      '<div class="loading">Loading artifact sources...</div>';
+    document.getElementById('releaseModal').classList.add('visible');
+    document.getElementById('releaseModal').dataset.definitionId =
+      String(definitionId);
+    vscode.postMessage({
+      command: 'loadReleaseDefinitionDetail',
+      definitionId: definitionId,
+      project: currentProject,
+    });
+  };
+
+  window.closeReleaseModal = function () {
+    document.getElementById('releaseModal').classList.remove('visible');
+  };
+
+  window.submitRelease = function () {
+    var defId = parseInt(
+      document.getElementById('releaseModal').dataset.definitionId,
+    );
+    var desc = document.getElementById('releaseDescription').value.trim();
+    // Collect artifact overrides
+    var artifactRows = document.querySelectorAll('.artifact-row');
+    var artifacts = [];
+    artifactRows.forEach(function (row) {
+      var alias = row.dataset.alias;
+      var branch = row.querySelector('.artifact-branch');
+      var version = row.querySelector('.artifact-version');
+      var art = { alias: alias };
+      if (branch && branch.value) {
+        art.branch = branch.value;
+      }
+      if (version && version.value.trim()) {
+        art.version = version.value.trim();
+      }
+      artifacts.push(art);
+    });
+    vscode.postMessage({
+      command: 'createRelease',
+      definitionId: defId,
+      description: desc,
+      artifacts: artifacts.length > 0 ? artifacts : undefined,
+      project: currentProject,
+    });
+    window.closeReleaseModal();
+  };
+
+  function renderReleases(releases) {
+    var container = document.getElementById('releasesList');
+    container.innerHTML = '';
+    if (!releases || releases.length === 0) {
+      container.innerHTML = '<div class="empty">No releases found.</div>';
+      return;
+    }
+
+    releases.forEach(function (r) {
+      var card = document.createElement('div');
+      card.className = 'release-card';
+
+      var header = document.createElement('div');
+      header.className = 'release-card-header';
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'release-name';
+      nameSpan.textContent = r.name || 'Release #' + r.id;
+      header.appendChild(nameSpan);
+      if (r.url) {
+        var linkBtn = document.createElement('button');
+        linkBtn.className = 'btn-icon btn-sm';
+        linkBtn.textContent = '\uD83D\uDD17';
+        linkBtn.title = 'Open in browser';
+        linkBtn.onclick = (function (url) {
+          return function () {
+            window.openUrl(url);
+          };
+        })(r.url);
+        header.appendChild(linkBtn);
+      }
+      card.appendChild(header);
+
+      var meta = document.createElement('div');
+      meta.className = 'release-meta';
+      var parts = [];
+      if (r.createdBy) parts.push(r.createdBy);
+      if (r.createdOn) parts.push(timeAgo(r.createdOn));
+      if (r.description) parts.push(r.description);
+      meta.textContent = parts.join(' \u00B7 ');
+      card.appendChild(meta);
+
+      if (r.environments && r.environments.length > 0) {
+        var envs = document.createElement('div');
+        envs.className = 'release-envs';
+        r.environments.forEach(function (env) {
+          var badge = document.createElement('span');
+          var envStatus = normalizeReleaseEnvStatus(env.status);
+          badge.className = 'release-env ' + envStatus;
+          badge.textContent = env.name + ': ' + envStatus;
+          envs.appendChild(badge);
+        });
+        card.appendChild(envs);
+      }
+
+      container.appendChild(card);
+    });
+  }
+
+  function normalizeReleaseEnvStatus(status) {
+    if (typeof status === 'number') {
+      // EnvironmentStatus enum: 1=NotStarted, 2=InProgress, 4=Succeeded, 8=Canceled, 16=Rejected, 32=Queued, 64=Scheduled, 128=PartiallySucceeded
+      if (status === 4) return 'succeeded';
+      if (status === 2 || status === 32 || status === 64) return 'inprogress';
+      if (status === 16 || status === 8) return 'rejected';
+      return 'notstarted';
+    }
+    var s = String(status || '').toLowerCase();
+    if (s.indexOf('succeed') >= 0) return 'succeeded';
+    if (s.indexOf('progress') >= 0 || s.indexOf('queue') >= 0)
+      return 'inprogress';
+    if (s.indexOf('reject') >= 0 || s.indexOf('cancel') >= 0) return 'rejected';
+    return 'notstarted';
+  }
 
   function renderBuilds(builds) {
     var tbody = document.getElementById('buildsBody');
@@ -623,6 +1029,189 @@
     }
   }
 
+  function renderReleaseArtifactFields(artifacts) {
+    var container = document.getElementById('releaseArtifactsArea');
+    if (!artifacts || artifacts.length === 0) {
+      container.innerHTML = '';
+      return;
+    }
+    var html = '';
+    artifacts.forEach(function (art) {
+      html +=
+        '<div class="artifact-row field" data-alias="' +
+        (art.alias || '') +
+        '">';
+      html +=
+        '<label><strong>' +
+        (art.alias || 'Artifact') +
+        '</strong> <span style="font-weight:normal;color:var(--vscode-descriptionForeground);">(' +
+        (art.type || 'Build') +
+        (art.definitionName ? ' - ' + art.definitionName : '') +
+        ')</span></label>';
+      html += '<div style="display:flex;gap:8px;flex-wrap:wrap;">';
+      html +=
+        '<div style="flex:1;min-width:160px;"><label style="font-size:0.85em;">Branch</label><select class="artifact-branch" data-default-branch="' +
+        (art.defaultBranch || '') +
+        '"><option value="">-- loading... --</option></select></div>';
+      html +=
+        '<div style="flex:1;min-width:160px;"><label style="font-size:0.85em;">Version / Image</label><input type="text" class="artifact-version" placeholder="latest (leave empty for default)"></div>';
+      html += '</div></div>';
+    });
+    container.innerHTML = html;
+  }
+
+  function renderRunParameters(variables, inputs) {
+    var container = document.getElementById('runParamsArea');
+    if (
+      (!variables || variables.length === 0) &&
+      (!inputs || inputs.length === 0)
+    ) {
+      container.innerHTML = '';
+      return;
+    }
+    var html = '';
+    if (variables && variables.length > 0) {
+      html +=
+        '<div style="margin-top:4px;margin-bottom:8px;font-weight:600;font-size:0.9em;">Variables</div>';
+      variables.forEach(function (v) {
+        html += '<div class="field">';
+        html +=
+          '<label style="font-size:0.85em;">' + escapeHtml(v.name) + '</label>';
+        html +=
+          '<input type="text" class="run-variable" data-name="' +
+          escapeHtml(v.name) +
+          '" data-default-value="' +
+          escapeHtml(v.value) +
+          '" value="' +
+          escapeHtml(v.value) +
+          '" placeholder="' +
+          escapeHtml(v.value || '') +
+          '">';
+        html += '</div>';
+      });
+    }
+    if (inputs && inputs.length > 0) {
+      html +=
+        '<div style="margin-top:4px;margin-bottom:8px;font-weight:600;font-size:0.9em;">Parameters</div>';
+      inputs.forEach(function (inp) {
+        var paramType = (inp.type || 'string').toLowerCase();
+        var hasOptions = inp.options && Object.keys(inp.options).length > 0;
+        var optionKeys = hasOptions ? Object.keys(inp.options) : [];
+
+        // Boolean → checkbox
+        if (paramType === 'boolean') {
+          var checked = inp.defaultValue === 'true' ? ' checked' : '';
+          html += '<div class="field checkbox-field">';
+          html +=
+            '<label><input type="checkbox" class="run-template-param" data-name="' +
+            escapeHtml(inp.name) +
+            '" data-type="boolean" data-default-value="' +
+            escapeHtml(inp.defaultValue) +
+            '"' +
+            checked +
+            '> ' +
+            escapeHtml(inp.label || inp.name) +
+            '</label>';
+          html += '</div>';
+        }
+        // Radio buttons: when type is 'radio', or when there are few options (<=5) and type is not 'pickList'
+        else if (
+          paramType === 'radio' ||
+          (hasOptions && optionKeys.length <= 5 && paramType !== 'picklist')
+        ) {
+          html += '<div class="field">';
+          html +=
+            '<label style="font-size:0.85em;">' +
+            escapeHtml(inp.label || inp.name) +
+            (inp.required
+              ? ' <span style="color:var(--vscode-errorForeground);">*</span>'
+              : '') +
+            '</label>';
+          html += '<div class="radio-group">';
+          optionKeys.forEach(function (key) {
+            var checkedR = key === inp.defaultValue ? ' checked' : '';
+            html +=
+              '<label><input type="radio" name="param_' +
+              escapeHtml(inp.name) +
+              '" class="run-template-param-radio" data-name="' +
+              escapeHtml(inp.name) +
+              '" data-default-value="' +
+              escapeHtml(inp.defaultValue) +
+              '" value="' +
+              escapeHtml(key) +
+              '"' +
+              checkedR +
+              '> ' +
+              escapeHtml(inp.options[key]) +
+              '</label>';
+          });
+          html += '</div></div>';
+        }
+        // pickList / dropdown: many options or explicit pickList type
+        else if (hasOptions) {
+          html += '<div class="field">';
+          html +=
+            '<label style="font-size:0.85em;">' +
+            escapeHtml(inp.label || inp.name) +
+            (inp.required
+              ? ' <span style="color:var(--vscode-errorForeground);">*</span>'
+              : '') +
+            '</label>';
+          html +=
+            '<select class="run-template-param" data-name="' +
+            escapeHtml(inp.name) +
+            '" data-default-value="' +
+            escapeHtml(inp.defaultValue) +
+            '">';
+          optionKeys.forEach(function (key) {
+            var selected = key === inp.defaultValue ? ' selected' : '';
+            html +=
+              '<option value="' +
+              escapeHtml(key) +
+              '"' +
+              selected +
+              '>' +
+              escapeHtml(inp.options[key]) +
+              '</option>';
+          });
+          html += '</select></div>';
+        }
+        // Text input (default)
+        else {
+          html += '<div class="field">';
+          html +=
+            '<label style="font-size:0.85em;">' +
+            escapeHtml(inp.label || inp.name) +
+            (inp.required
+              ? ' <span style="color:var(--vscode-errorForeground);">*</span>'
+              : '') +
+            '</label>';
+          html +=
+            '<input type="text" class="run-template-param" data-name="' +
+            escapeHtml(inp.name) +
+            '" data-default-value="' +
+            escapeHtml(inp.defaultValue) +
+            '" value="' +
+            escapeHtml(inp.defaultValue) +
+            '" placeholder="' +
+            escapeHtml(inp.defaultValue || '') +
+            '">';
+          html += '</div>';
+        }
+      });
+    }
+    container.innerHTML = html;
+  }
+
+  function escapeHtml(s) {
+    if (!s) return '';
+    return s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   // Message handler
   window.addEventListener('message', function (event) {
     var msg = event.data;
@@ -659,6 +1248,9 @@
         case 'pipelinesLoaded':
           allPipelines = msg.pipelines || [];
           if (msg.project) currentProject = msg.project;
+          if (msg.favorites) {
+            favorites = new Set(msg.favorites);
+          }
           document.getElementById('loadingMsg').style.display = 'none';
           if (!currentBuildId) {
             document.getElementById('pipelineArea').style.display = 'block';
@@ -686,6 +1278,66 @@
             vscode.postMessage({
               command: 'loadBuilds',
               definitionId: currentDefinitionId,
+              project: currentProject,
+            });
+          }
+          break;
+
+        case 'favoritesUpdated':
+          favorites = new Set(msg.favorites || []);
+          renderPipelines();
+          break;
+
+        case 'branchesLoaded':
+          var sel = document.getElementById('runBranch');
+          if (sel) {
+            sel.innerHTML = '<option value="">-- default --</option>';
+            (msg.branches || []).forEach(function (b) {
+              var opt = document.createElement('option');
+              opt.value = b;
+              opt.textContent = b;
+              sel.appendChild(opt);
+            });
+          }
+          // Also populate release artifact branch selects
+          var artBranches = document.querySelectorAll('.artifact-branch');
+          artBranches.forEach(function (branchSel) {
+            var defaultBranch = branchSel.dataset.defaultBranch || '';
+            branchSel.innerHTML = '<option value="">-- default --</option>';
+            (msg.branches || []).forEach(function (b) {
+              var opt = document.createElement('option');
+              opt.value = b;
+              opt.textContent = b;
+              if (b === defaultBranch) {
+                opt.selected = true;
+              }
+              branchSel.appendChild(opt);
+            });
+          });
+          break;
+
+        case 'pipelineParametersLoaded':
+          renderRunParameters(msg.variables || [], msg.inputs || []);
+          break;
+
+        case 'releaseDefinitionsLoaded':
+          releaseDefinitions = msg.definitions || [];
+          renderReleaseDefinitions(releaseDefinitions);
+          break;
+
+        case 'releaseDefinitionDetailLoaded':
+          renderReleaseArtifactFields(msg.artifacts || []);
+          break;
+
+        case 'releasesLoaded':
+          renderReleases(msg.releases);
+          break;
+
+        case 'releaseCreated':
+          if (currentReleaseDefId !== null) {
+            vscode.postMessage({
+              command: 'loadReleases',
+              definitionId: currentReleaseDefId,
               project: currentProject,
             });
           }

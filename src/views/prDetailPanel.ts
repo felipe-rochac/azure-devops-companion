@@ -150,6 +150,9 @@ export class PRDetailPanel {
           case 'assignWorkItemToMe':
             await this.handleAssignWorkItemToMe(message.workItemId);
             break;
+          case 'addressComments':
+            await this.handleAddressComments();
+            break;
         }
       },
       null,
@@ -240,19 +243,26 @@ export class PRDetailPanel {
       return;
     }
 
-    const confirm = await vscode.window.showInformationMessage(
-      `This will checkout branch "${branchName}" and open all ${this._changedFiles.length} changed files so Copilot can review them.\n\nAny uncommitted changes will need to be stashed first.`,
-      { modal: true },
-      'Checkout & Open Files'
-    );
-    if (confirm !== 'Checkout & Open Files') {
-      this._panel.webview.postMessage({ command: 'reviewStatus', status: 'error' });
-      return;
+    const currentBranch = await this.gitHelper.getCurrentBranch();
+    const alreadyOnBranch = currentBranch === branchName;
+
+    if (!alreadyOnBranch) {
+      const confirm = await vscode.window.showInformationMessage(
+        `This will checkout branch "${branchName}" and open all ${this._changedFiles.length} changed files so Copilot can review them.\n\nAny uncommitted changes will need to be stashed first.`,
+        { modal: true },
+        'Checkout & Open Files'
+      );
+      if (confirm !== 'Checkout & Open Files') {
+        this._panel.webview.postMessage({ command: 'reviewStatus', status: 'error' });
+        return;
+      }
     }
 
     try {
-      this._panel.webview.postMessage({ command: 'reviewStatus', status: 'checking-out' });
-      await this.gitHelper.checkoutBranch(branchName);
+      if (!alreadyOnBranch) {
+        this._panel.webview.postMessage({ command: 'reviewStatus', status: 'checking-out' });
+        await this.gitHelper.checkoutBranch(branchName);
+      }
 
       // Find the workspace folder root
       const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -330,6 +340,161 @@ export class PRDetailPanel {
     } catch (err: any) {
       this._panel.webview.postMessage({ command: 'reviewStatus', status: 'error' });
       vscode.window.showErrorMessage(`Failed to checkout: ${err?.message ?? err}`);
+    }
+  }
+
+  private async handleAddressComments() {
+    const branchName = this.pr.sourceRefName?.replace('refs/heads/', '');
+    if (!branchName) {
+      vscode.window.showErrorMessage('Cannot determine source branch for this PR.');
+      this._panel.webview.postMessage({ command: 'addressCommentsStatus', status: 'error' });
+      return;
+    }
+
+    if (!this.gitHelper) {
+      vscode.window.showErrorMessage('Git helper not available.');
+      this._panel.webview.postMessage({ command: 'addressCommentsStatus', status: 'error' });
+      return;
+    }
+
+    // Fetch active comment threads with file context
+    let threads: any[] = [];
+    try {
+      const repoId = this.pr.repository?.id;
+      const prId = this.pr.pullRequestId;
+      if (repoId && prId) {
+        threads = await this.api.getPRThreads(repoId, prId);
+      }
+    } catch {
+      vscode.window.showErrorMessage('Failed to fetch PR threads.');
+      this._panel.webview.postMessage({ command: 'addressCommentsStatus', status: 'error' });
+      return;
+    }
+
+    // Keep only active threads that have real comments (not system)
+    const activeThreads = threads.filter(
+      t => t.status === 1 && t.comments?.some((c: any) => c.commentType !== 0)
+    );
+
+    if (activeThreads.length === 0) {
+      vscode.window.showInformationMessage('No active comment threads to address.');
+      this._panel.webview.postMessage({ command: 'addressCommentsStatus', status: 'error' });
+      return;
+    }
+
+    const currentBranch = await this.gitHelper.getCurrentBranch();
+    const alreadyOnBranch = currentBranch === branchName;
+
+    if (!alreadyOnBranch) {
+      const confirm = await vscode.window.showInformationMessage(
+        `This will checkout branch "${branchName}" and ask Copilot to address ${activeThreads.length} active comment thread(s).\n\nAny uncommitted changes will need to be stashed first.`,
+        { modal: true },
+        'Checkout & Address Comments'
+      );
+      if (confirm !== 'Checkout & Address Comments') {
+        this._panel.webview.postMessage({ command: 'addressCommentsStatus', status: 'error' });
+        return;
+      }
+    }
+
+    try {
+      if (!alreadyOnBranch) {
+        this._panel.webview.postMessage({ command: 'addressCommentsStatus', status: 'checking-out' });
+        await this.gitHelper.checkoutBranch(branchName);
+      }
+
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      if (!workspaceFolders || workspaceFolders.length === 0) {
+        vscode.window.showErrorMessage('No workspace folder open.');
+        this._panel.webview.postMessage({ command: 'addressCommentsStatus', status: 'error' });
+        return;
+      }
+      const rootUri = workspaceFolders[0].uri;
+
+      // Collect the set of files referenced by comments and open them
+      const filePaths = new Set<string>();
+      for (const thread of activeThreads) {
+        const fp = thread.threadContext?.filePath;
+        if (fp) {
+          filePaths.add(fp.startsWith('/') ? fp.substring(1) : fp);
+        }
+      }
+
+      // Also open any changed files not in comments (for full context)
+      for (const file of this._changedFiles) {
+        if (file.changeType !== 'delete') {
+          const fp = file.path.startsWith('/') ? file.path.substring(1) : file.path;
+          filePaths.add(fp);
+        }
+      }
+
+      const openedFiles: string[] = [];
+      for (const filePath of filePaths) {
+        const fileUri = vscode.Uri.joinPath(rootUri, filePath);
+        try {
+          await vscode.workspace.fs.stat(fileUri);
+          await vscode.window.showTextDocument(fileUri, { preview: false, preserveFocus: true });
+          openedFiles.push(filePath);
+        } catch {
+          // File may not exist locally
+        }
+      }
+
+      this._panel.webview.postMessage({ command: 'addressCommentsStatus', status: 'ready' });
+
+      // Build a prompt with each active comment thread
+      const commentBlocks = activeThreads.map((thread, idx) => {
+        const fp = thread.threadContext?.filePath ?? 'general';
+        const ln = thread.threadContext?.rightFileStart?.line ?? thread.threadContext?.leftFileStart?.line;
+        const location = ln ? `${fp}:${ln}` : fp;
+        const comments = (thread.comments ?? [])
+          .filter((c: any) => c.commentType !== 0)
+          .map((c: any) => `  ${c.author?.displayName ?? 'Reviewer'}: ${c.content ?? ''}`)
+          .join('\n');
+        return `Comment ${idx + 1} (${location}):\n${comments}`;
+      }).join('\n\n');
+
+      const prTitle = this.pr.title ?? 'Untitled PR';
+      const fullPrompt = [
+        `You are reviewing PR comments for: "${prTitle}" (branch: ${branchName}).`,
+        ``,
+        `For each comment below, follow this process:`,
+        `1. ANALYZE: Read the comment and understand what the reviewer is requesting.`,
+        `2. EVALUATE: Check the relevant code and decide whether the comment is valid and pertinent.`,
+        `   - Is the suggestion correct? Does it improve correctness, safety, or clarity?`,
+        `   - Would applying it introduce regressions or break existing behavior?`,
+        `   - Is it a matter of personal preference with no objective benefit?`,
+        `3. DECIDE: Either apply the change or explain why you are skipping it.`,
+        ``,
+        `Rules:`,
+        `- Only apply changes that are objectively correct or clearly beneficial.`,
+        `- Skip comments that are subjective style preferences, already addressed, or would introduce issues.`,
+        `- Do not make unrelated changes beyond what is requested.`,
+        `- After processing all comments, provide a summary listing each comment and whether it was applied or skipped (with reasoning).`,
+        ``,
+        `Review comments to address:`,
+        ``,
+        commentBlocks,
+      ].join('\n');
+
+      await vscode.env.clipboard.writeText(fullPrompt);
+
+      try {
+        await vscode.commands.executeCommand('workbench.action.chat.open', { query: fullPrompt, isPartialQuery: false });
+      } catch {
+        try {
+          await vscode.commands.executeCommand('workbench.action.chat.open');
+        } catch {
+          // Chat not available
+        }
+      }
+
+      vscode.window.showInformationMessage(
+        `Opened ${openedFiles.length} files and sent ${activeThreads.length} comment(s) to Copilot. Prompt is also in your clipboard.`
+      );
+    } catch (err: any) {
+      this._panel.webview.postMessage({ command: 'addressCommentsStatus', status: 'error' });
+      vscode.window.showErrorMessage(`Failed to address comments: ${err?.message ?? err}`);
     }
   }
 
@@ -809,6 +974,7 @@ export class PRDetailPanel {
     <button class="btn-primary" onclick="openInBrowser()">🔗 Open in Browser</button>
     <button class="btn-secondary" onclick="refresh()">🔄 Refresh</button>
     <button class="btn-copilot" onclick="reviewWithCopilot()" id="btnCopilot">🤖 Review with Copilot</button>
+    <button class="btn-copilot" onclick="addressComments()" id="btnAddressComments" title="Checkout branch and ask Copilot to address active PR comments">💬 Address Comments</button>
     <button class="btn-secondary" onclick="toggleCopilotPrompt()" id="btnTogglePrompt" title="Customize the Copilot review prompt">⚙️</button>
   </div>
 
@@ -964,6 +1130,14 @@ export class PRDetailPanel {
       vscode.postMessage({ command: 'reviewWithCopilot', customPrompt: customPrompt, agent: agent });
     }
 
+    function addressComments() {
+      wvLog('addressComments clicked');
+      var btn = document.getElementById('btnAddressComments');
+      btn.disabled = true;
+      btn.textContent = '⏳ Checking out...';
+      vscode.postMessage({ command: 'addressComments' });
+    }
+
     function openWorkItem(workItemId) { wvLog('openWorkItem: ' + workItemId); vscode.postMessage({ command: 'openWorkItem', workItemId }); }
     function setWorkItemState(workItemId) { wvLog('setWorkItemState: ' + workItemId); vscode.postMessage({ command: 'setWorkItemState', workItemId }); }
     function addWorkItemNote(workItemId) { wvLog('addWorkItemNote: ' + workItemId); vscode.postMessage({ command: 'addWorkItemNote', workItemId }); }
@@ -1037,6 +1211,17 @@ export class PRDetailPanel {
         } else if (msg.status === 'error') {
           btn.disabled = false;
           btn.textContent = '🤖 Review with Copilot';
+        }
+      }
+      if (msg.command === 'addressCommentsStatus') {
+        wvLog('addressCommentsStatus: ' + msg.status);
+        var btn2 = document.getElementById('btnAddressComments');
+        if (msg.status === 'ready') {
+          btn2.disabled = false;
+          btn2.textContent = '✅ Comments Sent';
+        } else if (msg.status === 'error') {
+          btn2.disabled = false;
+          btn2.textContent = '💬 Address Comments';
         }
       }
     });

@@ -541,7 +541,7 @@ async function setupExtension(
 
     vscode.commands.registerCommand('azureDevOpsPR.openPR', async (item) => {
       if (item?.pr) {
-        PRDetailPanel.createOrShow(context.extensionUri, item.pr, api, gitHelper, prCommentController, output);
+        PRDetailPanel.createOrShow(context.extensionUri, item.pr, api, gitHelper, prCommentController);
       }
     }),
 
@@ -614,7 +614,7 @@ async function setupExtension(
     }),
 
     vscode.commands.registerCommand('azureDevOpsPR.openPipelineDashboard', () => {
-      PipelineDashboardPanel.createOrShow(context.extensionUri, api, pipelineProvider.getSelectedProject(), pipelineProvider.getSelectedRepo(), pipelineProvider.getSelectedRepoName());
+      PipelineDashboardPanel.createOrShow(context.extensionUri, api, pipelineProvider.getSelectedProject(), pipelineProvider.getSelectedRepo(), pipelineProvider.getSelectedRepoName(), context.globalState);
     }),
 
     vscode.commands.registerCommand('azureDevOpsPR.openPipelineBuild', (item: any) => {
@@ -625,7 +625,7 @@ async function setupExtension(
         buildNumber: build.buildNumber ?? '',
         definitionName: build.definition?.name ?? 'Pipeline',
         project: build.project?.name || pipelineProvider.getSelectedProject(),
-      }, pipelineProvider.getSelectedRepo(), pipelineProvider.getSelectedRepoName());
+      }, pipelineProvider.getSelectedRepo(), pipelineProvider.getSelectedRepoName(), context.globalState);
     }),
 
     vscode.commands.registerCommand('azureDevOpsPR.openPipelineBuildInBrowser', (item: any) => {
@@ -858,24 +858,6 @@ async function configurePAT(authManager: AuthManager, output?: vscode.OutputChan
     return;
   }
 
-  // Step 3: PAT (password field - never shown in plain text)
-  const pat = await vscode.window.showInputBox({
-    prompt: 'Enter your Personal Access Token (PAT)',
-    placeHolder: 'Paste your PAT here...',
-    password: true, // Masks input
-    ignoreFocusOut: true,
-    validateInput: (v) => {
-      if (!v || v.trim().length < 10) {
-        return 'PAT appears too short. Make sure you copied it correctly.';
-      }
-      return null;
-    },
-  });
-
-  if (!pat) {
-    return;
-  }
-
   // Save URL/project to settings (not secrets - these aren't sensitive)
   const config = vscode.workspace.getConfiguration('azureDevOpsPR');
   try {
@@ -886,12 +868,15 @@ async function configurePAT(authManager: AuthManager, output?: vscode.OutputChan
     return;
   }
 
-  // Save PAT securely using VS Code SecretStorage (OS keychain)
-  await authManager.saveCredentials(pat.trim());
-
-  vscode.window.showInformationMessage(
-    '✅ Azure DevOps connected! Your PAT is stored securely in the system keychain.'
-  );
+  // Sign in via Microsoft Entra (OAuth)
+  try {
+    await authManager.signInInteractive();
+    vscode.window.showInformationMessage(
+      '✅ Azure DevOps connected! Signed in via Microsoft account.'
+    );
+  } catch (err: any) {
+    vscode.window.showErrorMessage(`Sign in failed: ${err?.message ?? err}`);
+  }
 }
 
 export function deactivate() {

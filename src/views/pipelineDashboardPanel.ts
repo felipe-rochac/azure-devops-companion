@@ -9,6 +9,8 @@ export class PipelineDashboardPanel {
   private _repoId: string;
   private _repoName: string;
   private _extensionUri: vscode.Uri;
+  private _favorites: Set<number> = new Set();
+  private _globalState: vscode.Memento | undefined;
 
   // postMessage handshake state
   private _webviewReady = false;
@@ -31,7 +33,7 @@ export class PipelineDashboardPanel {
     this._pendingMessages = [];
   }
 
-  static createOrShow(extensionUri: vscode.Uri, api: AzureDevOpsApi, project?: string, repoId?: string, repoName?: string) {
+  static createOrShow(extensionUri: vscode.Uri, api: AzureDevOpsApi, project?: string, repoId?: string, repoName?: string, globalState?: vscode.Memento) {
     const column = vscode.ViewColumn.One;
     const resolvedProject = project || vscode.workspace.getConfiguration('azureDevOpsPR').get<string>('project', '');
 
@@ -42,6 +44,7 @@ export class PipelineDashboardPanel {
       p._project = resolvedProject;
       p._repoId = repoId || '';
       p._repoName = repoName || '';
+      if (globalState) { p._globalState = globalState; p._loadFavorites(); }
       if (changed) {
         p._sendPipelines();
       }
@@ -59,11 +62,11 @@ export class PipelineDashboardPanel {
       }
     );
 
-    PipelineDashboardPanel.currentPanel = new PipelineDashboardPanel(panel, extensionUri, api, resolvedProject, repoId || '', repoName || '');
+    PipelineDashboardPanel.currentPanel = new PipelineDashboardPanel(panel, extensionUri, api, resolvedProject, repoId || '', repoName || '', globalState);
   }
 
-  static createOrShowForBuild(extensionUri: vscode.Uri, api: AzureDevOpsApi, build: { id: number; buildNumber: string; definitionName: string; project?: string }, repoId?: string, repoName?: string) {
-    PipelineDashboardPanel.createOrShow(extensionUri, api, build.project, repoId, repoName);
+  static createOrShowForBuild(extensionUri: vscode.Uri, api: AzureDevOpsApi, build: { id: number; buildNumber: string; definitionName: string; project?: string }, repoId?: string, repoName?: string, globalState?: vscode.Memento) {
+    PipelineDashboardPanel.createOrShow(extensionUri, api, build.project, repoId, repoName, globalState);
     const panel = PipelineDashboardPanel.currentPanel;
     if (!panel) { return; }
     panel._sendBuild(build);
@@ -123,7 +126,7 @@ export class PipelineDashboardPanel {
         url: this._buildDefinitionUrl(this._project, d.id) || d._links?.web?.href,
       }));
       console.log('[Pipeline Dashboard] Sending pipelinesLoaded with', pipelines.length, 'pipelines');
-      this._post({ command: 'pipelinesLoaded', pipelines, project: this._project });
+      this._post({ command: 'pipelinesLoaded', pipelines, project: this._project, favorites: [...this._favorites] });
     } catch (err: any) {
       console.error('[Pipeline Dashboard] _sendPipelines error:', err);
       this._post({ command: 'error', message: `Failed to load pipelines: ${err?.message ?? err}` });
@@ -136,13 +139,16 @@ export class PipelineDashboardPanel {
     private api: AzureDevOpsApi,
     project: string,
     repoId: string,
-    repoName: string
+    repoName: string,
+    globalState?: vscode.Memento
   ) {
     this._panel = panel;
     this._extensionUri = extensionUri;
     this._project = project;
     this._repoId = repoId;
     this._repoName = repoName;
+    this._globalState = globalState;
+    this._loadFavorites();
 
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
@@ -167,7 +173,28 @@ export class PipelineDashboardPanel {
               await this._handleLoadTimeline(msg.buildId, msg.project);
               break;
             case 'queueBuild':
-              await this._handleQueueBuild(msg.definitionId, msg.branch, msg.project);
+              await this._handleQueueBuild(msg.definitionId, msg.branch, msg.project, msg.parameters, msg.templateParameters);
+              break;
+            case 'loadPipelineParameters':
+              await this._handleLoadPipelineParameters(msg.definitionId, msg.project);
+              break;
+            case 'toggleFavorite':
+              this._handleToggleFavorite(msg.definitionId);
+              break;
+            case 'loadBranches':
+              await this._handleLoadBranches();
+              break;
+            case 'loadReleaseDefinitions':
+              await this._handleLoadReleaseDefinitions(msg.project);
+              break;
+            case 'loadReleaseDefinitionDetail':
+              await this._handleLoadReleaseDefinitionDetail(msg.definitionId, msg.project);
+              break;
+            case 'loadReleases':
+              await this._handleLoadReleases(msg.definitionId, msg.project);
+              break;
+            case 'createRelease':
+              await this._handleCreateRelease(msg.definitionId, msg.description, msg.project, msg.artifacts);
               break;
             case 'openInBrowser':
               if (msg.url) {
@@ -211,7 +238,7 @@ export class PipelineDashboardPanel {
       } : null,
       url: this._buildDefinitionUrl(project, d.id) || d._links?.web?.href,
     }));
-    this._post({ command: 'pipelinesLoaded', pipelines, project });
+    this._post({ command: 'pipelinesLoaded', pipelines, project, favorites: [...this._favorites] });
   }
 
   private async _handleLoadBuilds(definitionId: number, project: string) {
@@ -261,8 +288,8 @@ export class PipelineDashboardPanel {
     this._post({ command: 'timelineLoaded', buildId, stages });
   }
 
-  private async _handleQueueBuild(definitionId: number, branch: string, project: string) {
-    const build = await this.api.queueBuild(definitionId, branch || undefined, project);
+  private async _handleQueueBuild(definitionId: number, branch: string, project: string, parameters?: Record<string, string>, templateParameters?: Record<string, string>) {
+    const build = await this.api.queueBuild(definitionId, branch || undefined, project, parameters, templateParameters);
     vscode.window.showInformationMessage(`Pipeline run #${build.buildNumber} queued!`);
     this._post({
       command: 'buildQueued',
@@ -273,6 +300,146 @@ export class PipelineDashboardPanel {
         url: build._links?.web?.href,
       },
     });
+  }
+
+  private async _handleLoadPipelineParameters(definitionId: number, project: string) {
+    try {
+      const def = await this.api.getBuildDefinition(definitionId, project);
+      // Collect settable variables
+      const variables: { name: string; value: string; allowOverride: boolean }[] = [];
+      if (def.variables) {
+        for (const [name, v] of Object.entries(def.variables)) {
+          if (v.allowOverride && !v.isSecret) {
+            variables.push({ name, value: v.value ?? '', allowOverride: true });
+          }
+        }
+      }
+      // Collect process parameters (classic pipeline inputs)
+      const inputs: { name: string; label: string; defaultValue: string; type: string; required: boolean; options?: Record<string, string> }[] = [];
+      if (def.processParameters?.inputs) {
+        for (const inp of def.processParameters.inputs) {
+          inputs.push({
+            name: inp.name ?? '',
+            label: inp.label ?? inp.name ?? '',
+            defaultValue: inp.defaultValue ?? '',
+            type: inp.type ?? 'string',
+            required: inp.required ?? false,
+            options: inp.options,
+          });
+        }
+      }
+      this._post({ command: 'pipelineParametersLoaded', definitionId, variables, inputs });
+    } catch (err: any) {
+      this._post({ command: 'pipelineParametersLoaded', definitionId, variables: [], inputs: [] });
+    }
+  }
+
+  private async _handleLoadBranches() {
+    if (!this._repoId) {
+      this._post({ command: 'branchesLoaded', branches: [] });
+      return;
+    }
+    try {
+      const branches = await this.api.getBranches(this._repoId);
+      const names = (branches || []).map((b: any) => b.name as string).sort();
+      this._post({ command: 'branchesLoaded', branches: names });
+    } catch (err: any) {
+      this._post({ command: 'branchesLoaded', branches: [] });
+    }
+  }
+
+  private _loadFavorites() {
+    const saved = this._globalState?.get<number[]>('pipelineFavorites', []) ?? [];
+    this._favorites = new Set(saved);
+  }
+
+  private _saveFavorites() {
+    this._globalState?.update('pipelineFavorites', [...this._favorites]);
+  }
+
+  private _handleToggleFavorite(definitionId: number) {
+    if (this._favorites.has(definitionId)) {
+      this._favorites.delete(definitionId);
+    } else {
+      this._favorites.add(definitionId);
+    }
+    this._saveFavorites();
+    this._post({ command: 'favoritesUpdated', favorites: [...this._favorites] });
+  }
+
+  private async _handleLoadReleaseDefinitions(project: string) {
+    try {
+      const definitions = await this.api.getReleaseDefinitions(project);
+      const mapped = (definitions || []).map((d: any) => ({
+        id: d.id,
+        name: d.name,
+        path: d.path,
+        url: d._links?.web?.href,
+      }));
+      this._post({ command: 'releaseDefinitionsLoaded', definitions: mapped, project });
+    } catch (err: any) {
+      this._post({ command: 'error', message: `Failed to load release definitions: ${err?.message ?? err}` });
+    }
+  }
+
+  private async _handleLoadReleases(definitionId: number, project: string) {
+    try {
+      const releases = await this.api.getReleases(project, definitionId, 10);
+      const mapped = (releases || []).map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        status: r.status,
+        createdOn: r.createdOn,
+        createdBy: r.createdBy?.displayName,
+        description: r.description,
+        environments: (r.environments ?? []).map((e: any) => ({
+          name: e.name,
+          status: e.status,
+        })),
+        url: r._links?.web?.href,
+      }));
+      this._post({ command: 'releasesLoaded', definitionId, releases: mapped });
+    } catch (err: any) {
+      this._post({ command: 'error', message: `Failed to load releases: ${err?.message ?? err}` });
+    }
+  }
+
+  private async _handleLoadReleaseDefinitionDetail(definitionId: number, project: string) {
+    try {
+      const def = await this.api.getReleaseDefinition(definitionId, project);
+      const artifacts = (def.artifacts || []).map((a: any) => ({
+        alias: a.alias,
+        type: a.type,
+        definitionName: a.definitionReference?.definition?.name,
+        defaultBranch: a.definitionReference?.defaultVersionBranch?.id || a.definitionReference?.branch?.id,
+      }));
+      this._post({ command: 'releaseDefinitionDetailLoaded', definitionId, artifacts });
+      // Also send branches for each artifact
+      if (this._repoId) {
+        const branches = await this.api.getBranches(this._repoId);
+        const names = (branches || []).map((b: any) => b.name as string).sort();
+        this._post({ command: 'branchesLoaded', branches: names });
+      }
+    } catch (err: any) {
+      this._post({ command: 'error', message: `Failed to load release definition detail: ${err?.message ?? err}` });
+    }
+  }
+
+  private async _handleCreateRelease(definitionId: number, description: string, project: string, artifacts?: { alias: string; version?: string; branch?: string }[]) {
+    try {
+      const release = await this.api.createRelease(definitionId, description || undefined, project, artifacts);
+      vscode.window.showInformationMessage(`Release "${release.name}" created!`);
+      this._post({
+        command: 'releaseCreated',
+        release: {
+          id: release.id,
+          name: release.name,
+          url: release._links?.web?.href,
+        },
+      });
+    } catch (err: any) {
+      this._post({ command: 'error', message: `Failed to create release: ${err?.message ?? err}` });
+    }
   }
 
   private _buildTimelineHierarchy(records: any[]): any[] {
@@ -396,11 +563,15 @@ export class PipelineDashboardPanel {
     .auto-refresh-note { font-size: 0.8em; color: var(--vscode-descriptionForeground); font-style: italic; }
     .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.45); z-index: 100; justify-content: center; align-items: center; }
     .modal-overlay.visible { display: flex; }
-    .modal { background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 24px; min-width: 380px; max-width: 500px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+    .modal { background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 24px; min-width: 380px; max-width: 500px; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
     .modal h2 { margin: 0 0 16px; font-size: 1.1em; }
     .field { margin-bottom: 14px; }
     .field label { display: block; margin-bottom: 4px; font-weight: 500; }
-    .field input { width: 100%; box-sizing: border-box; }
+    .field input, .field select { width: 100%; box-sizing: border-box; }
+    .field input[type="checkbox"], .field input[type="radio"] { width: auto; }
+    .radio-group { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+    .radio-group label, .checkbox-field label { display: flex; align-items: center; gap: 6px; font-weight: 400; cursor: pointer; font-size: 0.9em; }
+    .checkbox-field { margin-top: 4px; }
     .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
     .error-banner { background: rgba(220,53,69,0.12); color: var(--vscode-errorForeground); padding: 12px 16px; border-radius: var(--radius); margin-bottom: 12px; display: none; border: 1px solid rgba(220,53,69,0.3); }
     .error-banner.visible { display: flex; align-items: center; gap: 8px; }
@@ -416,6 +587,34 @@ export class PipelineDashboardPanel {
     .breadcrumb-sep.visible { display: inline; }
     .pipeline-count { font-size: 0.85em; color: var(--vscode-descriptionForeground); padding: 8px 0; }
     .load-more-bar { text-align: center; padding: 12px; }
+    .view-tabs { display: flex; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 16px; }
+    .view-tab { padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; font-weight: 500; color: var(--vscode-descriptionForeground); }
+    .view-tab:hover { color: var(--vscode-foreground); }
+    .view-tab.active { color: var(--vscode-foreground); border-bottom-color: var(--vscode-focusBorder); }
+    .view-tab-content { display: none; }
+    .view-tab-content.active { display: block; }
+    .group-header { font-weight: 600; font-size: 1em; padding: 10px 0 6px; color: var(--vscode-foreground); border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 8px; margin-top: 16px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+    .group-header:first-child { margin-top: 0; }
+    .group-header .chevron { transition: transform 0.15s; }
+    .group-header .chevron.collapsed { transform: rotate(-90deg); }
+    .group-content { display: block; }
+    .group-content.hidden { display: none; }
+    .fav-btn { background: none; border: none; cursor: pointer; font-size: 1.1em; padding: 2px 4px; opacity: 0.5; }
+    .fav-btn:hover { opacity: 1; }
+    .fav-btn.favorited { opacity: 1; }
+    .view-toggle { display: flex; gap: 4px; align-items: center; }
+    .view-toggle button { padding: 4px 8px; font-size: 0.85em; }
+    .view-toggle button.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+    .release-card { background: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 12px 16px; margin-bottom: 8px; }
+    .release-card-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .release-name { font-weight: 600; }
+    .release-meta { font-size: 0.85em; color: var(--vscode-descriptionForeground); margin-top: 4px; }
+    .release-envs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+    .release-env { padding: 2px 8px; border-radius: 10px; font-size: 0.8em; font-weight: 500; }
+    .release-env.succeeded { background: rgba(40,167,69,0.15); color: #28a745; }
+    .release-env.rejected { background: rgba(220,53,69,0.15); color: #dc3545; }
+    .release-env.inprogress { background: rgba(0,120,212,0.15); color: #0078d4; }
+    .release-env.notstarted { background: rgba(108,117,125,0.1); color: var(--vscode-descriptionForeground); }
   </style>
 </head>
 <body>
@@ -432,33 +631,73 @@ export class PipelineDashboardPanel {
   </div>
   <div class="content">
     <div id="errorBanner" class="error-banner"></div>
-    <div id="loadingMsg" class="loading">${this._project ? 'Loading pipelines...' : 'No project selected.'}</div>
-    <div id="pipelineArea" style="display:none">
-      <div id="pipelineCount" class="pipeline-count"></div>
-      <div id="pipelineGrid" class="pipeline-grid"></div>
-      <div id="emptyMsg" class="empty" style="display:none">No pipelines found for this project.</div>
+    <div class="view-tabs">
+      <div class="view-tab active" data-tab="pipelines" onclick="switchViewTab('pipelines')">\uD83D\uDD27 Pipelines</div>
+      <div class="view-tab" data-tab="releases" onclick="switchViewTab('releases')">\uD83D\uDE80 Releases</div>
     </div>
-    <div id="buildDetailArea" style="display:none">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
-        <button class="btn-secondary btn-sm" onclick="backToPipelines()">\u2190 Back</button>
-        <h2 id="buildDetailTitle" style="margin:0;font-size:1.1em;"></h2>
+    <div id="tab-pipelines" class="view-tab-content active">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <div class="view-toggle">
+          <button id="viewFlat" class="btn-secondary btn-sm active" onclick="setViewMode('flat')">Flat</button>
+          <button id="viewGrouped" class="btn-secondary btn-sm" onclick="setViewMode('grouped')">Grouped</button>
+        </div>
       </div>
-      <table class="builds-table" id="buildsTable">
-        <thead><tr><th>Run</th><th>Status</th><th>Branch</th><th>Triggered by</th><th>Duration</th><th></th></tr></thead>
-        <tbody id="buildsBody"></tbody>
-      </table>
-      <div id="timelineArea" class="timeline-panel"></div>
+      <div id="loadingMsg" class="loading">${this._project ? 'Loading pipelines...' : 'No project selected.'}</div>
+      <div id="pipelineArea" style="display:none">
+        <div id="pipelineCount" class="pipeline-count"></div>
+        <div id="pipelineGrid" class="pipeline-grid"></div>
+        <div id="emptyMsg" class="empty" style="display:none">No pipelines found for this project.</div>
+      </div>
+      <div id="buildDetailArea" style="display:none">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+          <button class="btn-secondary btn-sm" onclick="backToPipelines()">\u2190 Back</button>
+          <h2 id="buildDetailTitle" style="margin:0;font-size:1.1em;"></h2>
+        </div>
+        <table class="builds-table" id="buildsTable">
+          <thead><tr><th>Run</th><th>Status</th><th>Branch</th><th>Triggered by</th><th>Duration</th><th></th></tr></thead>
+          <tbody id="buildsBody"></tbody>
+        </table>
+        <div id="timelineArea" class="timeline-panel"></div>
+      </div>
+    </div>
+    <div id="tab-releases" class="view-tab-content">
+      <div id="releaseLoadingMsg" class="loading">Loading release definitions...</div>
+      <div id="releaseArea" style="display:none">
+        <div id="releaseDefGrid" class="pipeline-grid"></div>
+        <div id="releaseEmptyMsg" class="empty" style="display:none">No release definitions found.</div>
+      </div>
+      <div id="releaseDetailArea" style="display:none">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+          <button class="btn-secondary btn-sm" onclick="backToReleaseDefinitions()">\u2190 Back</button>
+          <h2 id="releaseDetailTitle" style="margin:0;font-size:1.1em;"></h2>
+        </div>
+        <div id="releasesList"></div>
+      </div>
     </div>
   </div>
   <div id="runModal" class="modal-overlay">
     <div class="modal">
       <h2>\u25B6 Run Pipeline</h2>
       <div class="field"><label>Pipeline</label><input type="text" id="runPipelineName" disabled></div>
-      <div class="field"><label>Branch (optional)</label><input type="text" id="runBranch" placeholder="main"></div>
+      <div class="field"><label>Branch (optional)</label><select id="runBranch"><option value="">-- default --</option></select></div>
+      <div id="runParamsArea"></div>
       <div id="runError" class="error-banner"></div>
       <div class="modal-actions">
         <button class="btn-secondary" onclick="closeRunModal()">Cancel</button>
         <button class="btn-primary" onclick="submitRun()">Run</button>
+      </div>
+    </div>
+  </div>
+  <div id="releaseModal" class="modal-overlay">
+    <div class="modal">
+      <h2>\uD83D\uDE80 Create Release</h2>
+      <div class="field"><label>Release Definition</label><input type="text" id="releaseDefName" disabled></div>
+      <div id="releaseArtifactsArea"></div>
+      <div class="field"><label>Description (optional)</label><input type="text" id="releaseDescription" placeholder="Release description"></div>
+      <div id="releaseError" class="error-banner"></div>
+      <div class="modal-actions">
+        <button class="btn-secondary" onclick="closeReleaseModal()">Cancel</button>
+        <button class="btn-primary" onclick="submitRelease()">Create Release</button>
       </div>
     </div>
   </div>

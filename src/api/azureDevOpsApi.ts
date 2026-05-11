@@ -1,9 +1,11 @@
 import * as azdev from 'azure-devops-node-api';
 import * as GitApi from 'azure-devops-node-api/GitApi';
 import * as BuildApi from 'azure-devops-node-api/BuildApi';
+import * as ReleaseApi from 'azure-devops-node-api/ReleaseApi';
 import * as WorkItemTrackingApi from 'azure-devops-node-api/WorkItemTrackingApi';
 import { GitPullRequest, GitPullRequestSearchCriteria, PullRequestStatus, Comment, CommentThread, GitPullRequestChange, GitPullRequestIteration } from 'azure-devops-node-api/interfaces/GitInterfaces';
 import { Build, BuildDefinitionReference, BuildQueryOrder, BuildStatus, Timeline } from 'azure-devops-node-api/interfaces/BuildInterfaces';
+import { Release, ReleaseDefinition, ReleaseStartMetadata } from 'azure-devops-node-api/interfaces/ReleaseInterfaces';
 import { WorkItem, Wiql } from 'azure-devops-node-api/interfaces/WorkItemTrackingInterfaces';
 import { JsonPatchOperation } from 'azure-devops-node-api/interfaces/common/VSSInterfaces';
 import { AuthManager } from '../utils/authManager';
@@ -38,7 +40,9 @@ export class AzureDevOpsApi {
   private connection: azdev.WebApi | undefined;
   private gitClient: GitApi.IGitApi | undefined;
   private buildClient: BuildApi.IBuildApi | undefined;
+  private releaseClient: ReleaseApi.IReleaseApi | undefined;
   private workItemClient: WorkItemTrackingApi.IWorkItemTrackingApi | undefined;
+  private accessToken: string | undefined;
 
   constructor(private readonly authManager: AuthManager) {}
 
@@ -83,7 +87,9 @@ export class AzureDevOpsApi {
     this.connection = undefined;
     this.gitClient = undefined;
     this.buildClient = undefined;
+    this.releaseClient = undefined;
     this.workItemClient = undefined;
+    this.accessToken = undefined;
   }
 
   private getConfig() {
@@ -94,23 +100,27 @@ export class AzureDevOpsApi {
   }
 
   private async getConnection(): Promise<azdev.WebApi> {
-    if (this.connection) {
-      return this.connection;
-    }
-
-    const pat = await this.authManager.getPAT();
-    if (!pat) {
-      throw new Error('Not authenticated. Please configure your Personal Access Token.');
+    const token = await this.authManager.getAccessToken();
+    if (!token) {
+      throw new Error('Not authenticated. Please sign in to Azure DevOps.');
     }
 
     const { orgUrl } = this.getConfig();
     if (!orgUrl) {
-      throw new Error('Organization URL not configured. Please run "Configure Personal Access Token".');
+      throw new Error('Organization URL not configured. Please run "Sign In to Azure DevOps".');
     }
 
-    // Use PAT-based auth handler - credentials never sent in plaintext
-    const authHandler = azdev.getPersonalAccessTokenHandler(pat);
+    if (this.connection && this.accessToken === token) {
+      return this.connection;
+    }
+
+    // Use OAuth bearer token acquired via Microsoft Entra sign-in.
+    const authHandler = azdev.getBearerHandler(token);
     this.connection = new azdev.WebApi(orgUrl, authHandler);
+    this.accessToken = token;
+    this.gitClient = undefined;
+    this.buildClient = undefined;
+    this.workItemClient = undefined;
 
     return this.connection;
   }
@@ -131,6 +141,15 @@ export class AzureDevOpsApi {
     const conn = await this.getConnection();
     this.buildClient = await conn.getBuildApi();
     return this.buildClient;
+  }
+
+  private async getReleaseClient(): Promise<ReleaseApi.IReleaseApi> {
+    if (this.releaseClient) {
+      return this.releaseClient;
+    }
+    const conn = await this.getConnection();
+    this.releaseClient = await conn.getReleaseApi();
+    return this.releaseClient;
   }
 
   private async getWorkItemClient(): Promise<WorkItemTrackingApi.IWorkItemTrackingApi> {
@@ -384,17 +403,85 @@ export class AzureDevOpsApi {
   }
 
   /**
+   * Get a build definition with full details (variables, process parameters).
+   */
+  async getBuildDefinition(definitionId: number, projectName?: string) {
+    return this.withRetry(async () => {
+      const build = await this.getBuildClient();
+      const project = projectName || this.getConfig().project;
+      return await build.getDefinition(project, definitionId);
+    });
+  }
+
+  /**
    * Queue (trigger) a new build for a pipeline definition.
    */
-  async queueBuild(definitionId: number, sourceBranch?: string, projectName?: string): Promise<Build> {
+  async queueBuild(definitionId: number, sourceBranch?: string, projectName?: string, parameters?: Record<string, string>, templateParameters?: Record<string, string>): Promise<Build> {
     return this.withRetry(async () => {
       const build = await this.getBuildClient();
       const project = projectName || this.getConfig().project;
       const buildToQueue: Build = {
         definition: { id: definitionId },
         sourceBranch: sourceBranch ? `refs/heads/${sourceBranch}` : undefined,
+        parameters: parameters ? JSON.stringify(parameters) : undefined,
+        templateParameters: templateParameters,
       };
       return await build.queueBuild(buildToQueue, project);
+    });
+  }
+
+  /**
+   * Get release definitions for a project.
+   */
+  async getReleaseDefinitions(projectName?: string, top: number = 100): Promise<ReleaseDefinition[]> {
+    return this.withRetry(async () => {
+      const release = await this.getReleaseClient();
+      const project = projectName || this.getConfig().project;
+      return await release.getReleaseDefinitions(project, undefined, undefined, undefined, undefined, top) ?? [];
+    });
+  }
+
+  /**
+   * Get a single release definition with full details (including artifacts).
+   */
+  async getReleaseDefinition(definitionId: number, projectName?: string): Promise<ReleaseDefinition> {
+    return this.withRetry(async () => {
+      const release = await this.getReleaseClient();
+      const project = projectName || this.getConfig().project;
+      return await release.getReleaseDefinition(project, definitionId);
+    });
+  }
+
+  /**
+   * Get recent releases, optionally filtered by definition.
+   */
+  async getReleases(projectName?: string, definitionId?: number, top: number = 20): Promise<Release[]> {
+    return this.withRetry(async () => {
+      const release = await this.getReleaseClient();
+      const project = projectName || this.getConfig().project;
+      return await release.getReleases(project, definitionId, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, top) ?? [];
+    });
+  }
+
+  /**
+   * Create (trigger) a new release for a given release definition.
+   */
+  async createRelease(definitionId: number, description?: string, projectName?: string, artifacts?: { alias: string; version?: string; branch?: string }[]): Promise<Release> {
+    return this.withRetry(async () => {
+      const release = await this.getReleaseClient();
+      const project = projectName || this.getConfig().project;
+      const metadata: ReleaseStartMetadata = {
+        definitionId,
+        description: description || undefined,
+        artifacts: artifacts?.map(a => ({
+          alias: a.alias,
+          instanceReference: {
+            name: a.version || undefined,
+            sourceBranch: a.branch || undefined,
+          },
+        })),
+      };
+      return await release.createRelease(metadata, project);
     });
   }
 
