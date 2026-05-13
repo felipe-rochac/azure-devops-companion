@@ -304,30 +304,7 @@ export class PipelineDashboardPanel {
 
   private async _handleLoadPipelineParameters(definitionId: number, project: string) {
     try {
-      const def = await this.api.getBuildDefinition(definitionId, project);
-      // Collect settable variables
-      const variables: { name: string; value: string; allowOverride: boolean }[] = [];
-      if (def.variables) {
-        for (const [name, v] of Object.entries(def.variables)) {
-          if (v.allowOverride && !v.isSecret) {
-            variables.push({ name, value: v.value ?? '', allowOverride: true });
-          }
-        }
-      }
-      // Collect process parameters (classic pipeline inputs)
-      const inputs: { name: string; label: string; defaultValue: string; type: string; required: boolean; options?: Record<string, string> }[] = [];
-      if (def.processParameters?.inputs) {
-        for (const inp of def.processParameters.inputs) {
-          inputs.push({
-            name: inp.name ?? '',
-            label: inp.label ?? inp.name ?? '',
-            defaultValue: inp.defaultValue ?? '',
-            type: inp.type ?? 'string',
-            required: inp.required ?? false,
-            options: inp.options,
-          });
-        }
-      }
+      const { variables, inputs } = await this.api.getPipelineParameterMetadata(definitionId, project);
       this._post({ command: 'pipelineParametersLoaded', definitionId, variables, inputs });
     } catch (err: any) {
       this._post({ command: 'pipelineParametersLoaded', definitionId, variables: [], inputs: [] });

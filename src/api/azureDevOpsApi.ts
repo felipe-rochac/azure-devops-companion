@@ -4,12 +4,14 @@ import * as BuildApi from 'azure-devops-node-api/BuildApi';
 import * as ReleaseApi from 'azure-devops-node-api/ReleaseApi';
 import * as WorkItemTrackingApi from 'azure-devops-node-api/WorkItemTrackingApi';
 import { GitPullRequest, GitPullRequestSearchCriteria, PullRequestStatus, Comment, CommentThread, GitPullRequestChange, GitPullRequestIteration } from 'azure-devops-node-api/interfaces/GitInterfaces';
-import { Build, BuildDefinitionReference, BuildQueryOrder, BuildStatus, Timeline } from 'azure-devops-node-api/interfaces/BuildInterfaces';
+import { Build, BuildDefinitionReference, BuildQueryOrder, BuildStatus, Timeline, YamlProcess } from 'azure-devops-node-api/interfaces/BuildInterfaces';
 import { Release, ReleaseDefinition, ReleaseStartMetadata } from 'azure-devops-node-api/interfaces/ReleaseInterfaces';
 import { WorkItem, Wiql } from 'azure-devops-node-api/interfaces/WorkItemTrackingInterfaces';
 import { JsonPatchOperation } from 'azure-devops-node-api/interfaces/common/VSSInterfaces';
 import { AuthManager } from '../utils/authManager';
 import * as vscode from 'vscode';
+
+const yaml = require('js-yaml');
 
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 1000;
@@ -34,6 +36,20 @@ export interface WorkItemSummary {
 export interface CurrentUserIdentity {
   id: string;
   displayName?: string;
+}
+
+export interface PipelineInputDefinition {
+  name: string;
+  label: string;
+  defaultValue: string;
+  type: string;
+  required: boolean;
+  options?: Record<string, string>;
+}
+
+export interface PipelineParameterMetadata {
+  variables: { name: string; value: string; allowOverride: boolean }[];
+  inputs: PipelineInputDefinition[];
 }
 
 export class AzureDevOpsApi {
@@ -428,6 +444,129 @@ export class AzureDevOpsApi {
       };
       return await build.queueBuild(buildToQueue, project);
     });
+  }
+
+  async getPipelineParameterMetadata(definitionId: number, projectName?: string): Promise<PipelineParameterMetadata> {
+    return this.withRetry(async () => {
+      const def = await this.getBuildDefinition(definitionId, projectName);
+      const variables: { name: string; value: string; allowOverride: boolean }[] = [];
+
+      if (def.variables) {
+        for (const [name, value] of Object.entries(def.variables)) {
+          if (value.allowOverride && !value.isSecret) {
+            variables.push({ name, value: value.value ?? '', allowOverride: true });
+          }
+        }
+      }
+
+      const inputs: PipelineInputDefinition[] = [];
+      if (def.processParameters?.inputs) {
+        for (const input of def.processParameters.inputs) {
+          inputs.push({
+            name: input.name ?? '',
+            label: input.label ?? input.name ?? '',
+            defaultValue: input.defaultValue ?? '',
+            type: input.type ?? 'string',
+            required: input.required ?? false,
+            options: input.options,
+          });
+        }
+      }
+
+      if (inputs.length > 0) {
+        return { variables, inputs };
+      }
+
+      const yamlInputs = await this.getYamlRuntimeParameters(def, projectName);
+      return { variables, inputs: yamlInputs };
+    });
+  }
+
+  private async getYamlRuntimeParameters(definition: any, projectName?: string): Promise<PipelineInputDefinition[]> {
+    const process = definition.process as YamlProcess | undefined;
+    const yamlFilename = process?.yamlFilename;
+    const repositoryId = definition.repository?.id;
+    const defaultBranch = definition.repository?.defaultBranch;
+
+    if (!yamlFilename || !repositoryId || !defaultBranch) {
+      return [];
+    }
+
+    const branchName = String(defaultBranch).replace(/^refs\/heads\//, '');
+    const yamlText = await this.getFileContentByBranch(repositoryId, yamlFilename, branchName || String(defaultBranch));
+    const parsed = yaml.load(yamlText) as any;
+    const parameters = parsed?.parameters;
+    if (!parameters) {
+      return [];
+    }
+
+    return this.normalizeYamlParameters(parameters);
+  }
+
+  private normalizeYamlParameters(parameters: any): PipelineInputDefinition[] {
+    if (Array.isArray(parameters)) {
+      return parameters
+        .map((parameter) => this.normalizeYamlParameterEntry(parameter))
+        .filter((parameter): parameter is PipelineInputDefinition => Boolean(parameter));
+    }
+
+    if (parameters && typeof parameters === 'object') {
+      return Object.entries(parameters).map(([name, value]) => ({
+        name,
+        label: name,
+        defaultValue: this.stringifyYamlDefault(value),
+        type: this.inferYamlType(value),
+        required: false,
+      }));
+    }
+
+    return [];
+  }
+
+  private normalizeYamlParameterEntry(parameter: any): PipelineInputDefinition | undefined {
+    if (!parameter || typeof parameter !== 'object' || !parameter.name) {
+      return undefined;
+    }
+
+    const values = Array.isArray(parameter.values) ? parameter.values : [];
+    const options = values.length > 0
+      ? Object.fromEntries(values.map((value: any) => {
+          const text = this.stringifyYamlDefault(value);
+          return [text, text];
+        }))
+      : undefined;
+
+    return {
+      name: String(parameter.name),
+      label: String(parameter.displayName ?? parameter.name),
+      defaultValue: this.stringifyYamlDefault(parameter.default),
+      type: String(parameter.type ?? (values.length > 0 ? 'pickList' : this.inferYamlType(parameter.default))),
+      required: parameter.default === undefined,
+      options,
+    };
+  }
+
+  private stringifyYamlDefault(value: any): string {
+    if (value === undefined || value === null) {
+      return '';
+    }
+    if (typeof value === 'string') {
+      return value;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    return JSON.stringify(value);
+  }
+
+  private inferYamlType(value: any): string {
+    if (typeof value === 'boolean') {
+      return 'boolean';
+    }
+    if (typeof value === 'number') {
+      return 'number';
+    }
+    return 'string';
   }
 
   /**

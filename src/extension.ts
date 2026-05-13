@@ -9,34 +9,39 @@ export function activate(context: vscode.ExtensionContext) {
   // Core auth service only — keep activation surface minimal.
   const authManager = new AuthManager(context.secrets);
 
-  // When the PAT secret changes (saved or cleared), re-evaluate auth state.
+  // When auth state changes, re-evaluate extension auth context.
   // setupExtension wires this up to the providers once they exist.
-  let onPatChanged: (() => void) | undefined;
+  let onAuthChanged: (() => void) | undefined;
   context.subscriptions.push(
     context.secrets.onDidChange((e) => {
-      if (e.key === 'azureDevOpsPR.pat' && onPatChanged) {
-        onPatChanged();
+      if (e.key === 'azureDevOpsPR.oauth.disabled' && onAuthChanged) {
+        onAuthChanged();
+      }
+    }),
+    vscode.authentication.onDidChangeSessions((e) => {
+      if (e.provider.id === 'microsoft' && onAuthChanged) {
+        onAuthChanged();
       }
     })
   );
 
-  // Register the two entry-point commands IMMEDIATELY so clicking "Configure PAT"
+  // Register the two entry-point commands IMMEDIATELY so clicking "Sign In"
   // in the welcome view always works, even before setupExtension completes.
   context.subscriptions.push(
     vscode.commands.registerCommand('azureDevOpsPR.configurePAT', async () => {
       output.appendLine('configurePAT command invoked');
-      await configurePAT(authManager, output);
+      await configureSignIn(authManager, output);
     }),
     vscode.commands.registerCommand('azureDevOpsPR.signIn', async () => {
       output.appendLine('signIn command invoked');
-      await configurePAT(authManager, output);
+      await configureSignIn(authManager, output);
     })
   );
 
   output.appendLine('Core commands registered. Starting async setup...');
 
   // Rest of setup is async but does NOT block command availability
-  setupExtension(context, output, authManager, (cb) => { onPatChanged = cb; })
+  setupExtension(context, output, authManager, (cb) => { onAuthChanged = cb; })
     .catch((err: any) => {
       const msg = `Setup error: ${err?.message ?? err}`;
       output.appendLine(msg);
@@ -48,7 +53,7 @@ async function setupExtension(
   context: vscode.ExtensionContext,
   output: vscode.OutputChannel,
   authManager: AuthManager,
-  registerPatChangedCallback: (cb: () => void) => void
+  registerAuthChangedCallback: (cb: () => void) => void
 ) {
 
   const { AzureDevOpsApi } = await import('./api/azureDevOpsApi');
@@ -149,9 +154,11 @@ async function setupExtension(
   const startupConfig = vscode.workspace.getConfiguration('azureDevOpsPR');
   const autoDetectFromWorkspace = startupConfig.get<boolean>('autoDetectFromWorkspace', true);
 
-  // Always auto-detect project/repo from the workspace git remote so panels
-  // only load data for the current repository instead of the entire org.
-  let autoDetected = false;
+  // Auto-detect project/repo from the workspace git remote. Track project and
+  // repo detection independently so a saved repo filter is never silently
+  // discarded just because the project was found but the repo lookup failed.
+  let autoDetectedProject = false;
+  let autoDetectedRepo = false;
   if (autoDetectFromWorkspace) {
     try {
       const ctx = await gitHelper.detectAzureDevOpsContext();
@@ -159,7 +166,7 @@ async function setupExtension(
         prProvider.setProject(ctx.projectName);
         pipelineProvider.setProject(ctx.projectName);
         workProvider.setProject(ctx.projectName);
-        autoDetected = true;
+        autoDetectedProject = true;
       }
 
       if (ctx?.projectName && ctx?.repoName) {
@@ -168,6 +175,7 @@ async function setupExtension(
         if (repo?.id) {
           prProvider.setRepository(repo.id, repo.name);
           pipelineProvider.setRepository(repo.id, repo.name);
+          autoDetectedRepo = true;
         }
       }
     } catch (err: any) {
@@ -175,13 +183,15 @@ async function setupExtension(
     }
   }
 
-  // Fall back to saved filters only when auto-detection did not succeed.
-  if (!autoDetected) {
+  // Fall back to saved filters for any dimension that auto-detection missed.
+  if (!autoDetectedProject) {
     if (savedFilters.prProject) { prProvider.setProject(savedFilters.prProject); }
-    if (savedFilters.prRepo) { prProvider.setRepository(savedFilters.prRepo, savedFilters.prRepoName); }
     if (savedFilters.pipelineProject) { pipelineProvider.setProject(savedFilters.pipelineProject); }
-    if (savedFilters.pipelineRepo) { pipelineProvider.setRepository(savedFilters.pipelineRepo, savedFilters.pipelineRepoName); }
     if (savedFilters.workProject) { workProvider.setProject(savedFilters.workProject); }
+  }
+  if (!autoDetectedRepo) {
+    if (savedFilters.prRepo) { prProvider.setRepository(savedFilters.prRepo, savedFilters.prRepoName); }
+    if (savedFilters.pipelineRepo) { pipelineProvider.setRepository(savedFilters.pipelineRepo, savedFilters.pipelineRepoName); }
   }
 
   function saveFilters() {
@@ -283,7 +293,7 @@ async function setupExtension(
   context.subscriptions.push(
     vscode.commands.registerCommand('azureDevOpsPR.signOut', async () => {
       const confirm = await vscode.window.showWarningMessage(
-        'Sign out from Azure DevOps? Your PAT will be removed.',
+        'Disconnect this extension from Azure DevOps?',
         { modal: true },
         'Sign Out'
       );
@@ -541,7 +551,7 @@ async function setupExtension(
 
     vscode.commands.registerCommand('azureDevOpsPR.openPR', async (item) => {
       if (item?.pr) {
-        PRDetailPanel.createOrShow(context.extensionUri, item.pr, api, gitHelper, prCommentController);
+        PRDetailPanel.createOrShow(context.extensionUri, item.pr, api, gitHelper, prCommentController, output);
       }
     }),
 
@@ -614,7 +624,7 @@ async function setupExtension(
     }),
 
     vscode.commands.registerCommand('azureDevOpsPR.openPipelineDashboard', () => {
-      PipelineDashboardPanel.createOrShow(context.extensionUri, api, pipelineProvider.getSelectedProject(), pipelineProvider.getSelectedRepo(), pipelineProvider.getSelectedRepoName(), context.globalState);
+      PipelineDashboardPanel.createOrShow(context.extensionUri, api, pipelineProvider.getSelectedProject(), pipelineProvider.getSelectedRepo(), pipelineProvider.getSelectedRepoName());
     }),
 
     vscode.commands.registerCommand('azureDevOpsPR.openPipelineBuild', (item: any) => {
@@ -625,7 +635,7 @@ async function setupExtension(
         buildNumber: build.buildNumber ?? '',
         definitionName: build.definition?.name ?? 'Pipeline',
         project: build.project?.name || pipelineProvider.getSelectedProject(),
-      }, pipelineProvider.getSelectedRepo(), pipelineProvider.getSelectedRepoName(), context.globalState);
+      }, pipelineProvider.getSelectedRepo(), pipelineProvider.getSelectedRepoName());
     }),
 
     vscode.commands.registerCommand('azureDevOpsPR.openPipelineBuildInBrowser', (item: any) => {
@@ -819,15 +829,15 @@ async function setupExtension(
     })
   );
 
-  // Re-wire configurePAT & signIn to also refresh providers now that they're available
-  registerPatChangedCallback(() => updateAuthContext());
+  // Re-wire sign-in/sign-out hooks to refresh providers now that they're available.
+  registerAuthChangedCallback(() => updateAuthContext());
 
   output.appendLine('All commands registered.');
   updateAuthContext();
 }
 
-async function configurePAT(authManager: AuthManager, output?: vscode.OutputChannel) {
-  output?.appendLine('configurePAT: showing org URL input');
+async function configureSignIn(authManager: AuthManager, output?: vscode.OutputChannel) {
+  output?.appendLine('configureSignIn: showing org URL input');
   // Step 1: Organization URL
   const orgUrl = await vscode.window.showInputBox({
     prompt: 'Enter your Azure DevOps organization URL',
@@ -868,15 +878,12 @@ async function configurePAT(authManager: AuthManager, output?: vscode.OutputChan
     return;
   }
 
-  // Sign in via Microsoft Entra (OAuth)
-  try {
-    await authManager.signInInteractive();
-    vscode.window.showInformationMessage(
-      '✅ Azure DevOps connected! Signed in via Microsoft account.'
-    );
-  } catch (err: any) {
-    vscode.window.showErrorMessage(`Sign in failed: ${err?.message ?? err}`);
-  }
+  // Trigger Microsoft Entra sign-in for Azure DevOps delegated access.
+  await authManager.signInInteractive();
+
+  vscode.window.showInformationMessage(
+    'Azure DevOps connected with Microsoft Entra sign-in.'
+  );
 }
 
 export function deactivate() {
