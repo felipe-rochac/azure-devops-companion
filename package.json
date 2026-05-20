@@ -2,7 +2,7 @@
   "name": "azure-devops-companion",
   "displayName": "Azure DevOps Companion",
   "description": "Review and manage Azure DevOps pull requests, pipelines, and work items directly in VS Code",
-  "version": "1.3.7",
+  "version": "1.3.9",
   "publisher": "kyrone",
   "license": "MIT",
   "engines": {

@@ -38,6 +38,28 @@ export class AuthManager {
   }
 
   /**
+   * Try to refresh the access token without forcing sign-in UI.
+   */
+  async refreshAccessTokenSilently(): Promise<string | undefined> {
+    if (await this.isDisconnected()) {
+      return undefined;
+    }
+    const session = await this.getSession(false);
+    return session?.accessToken;
+  }
+
+  /**
+   * Force re-authentication when the current session can no longer be refreshed.
+   */
+  async refreshAccessTokenInteractive(): Promise<string | undefined> {
+    if (await this.isDisconnected()) {
+      return undefined;
+    }
+    const session = await this.getSession(true);
+    return session?.accessToken;
+  }
+
+  /**
    * Check if user is authenticated.
    */
   async isAuthenticated(): Promise<boolean> {

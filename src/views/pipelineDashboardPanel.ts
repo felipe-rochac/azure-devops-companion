@@ -311,6 +311,19 @@ export class PipelineDashboardPanel {
     }
   }
 
+  /** Return only branch names with recent commit activity (last 6 months). */
+  private _filterActiveBranches(branches: any[]): string[] {
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    return (branches || [])
+      .filter((b: any) => {
+        const commitDate = b.commit?.committer?.date ?? b.commit?.author?.date;
+        return !commitDate || new Date(commitDate) >= sixMonthsAgo;
+      })
+      .map((b: any) => b.name as string)
+      .sort();
+  }
+
   private async _handleLoadBranches() {
     if (!this._repoId) {
       this._post({ command: 'branchesLoaded', branches: [] });
@@ -318,7 +331,7 @@ export class PipelineDashboardPanel {
     }
     try {
       const branches = await this.api.getBranches(this._repoId);
-      const names = (branches || []).map((b: any) => b.name as string).sort();
+      const names = this._filterActiveBranches(branches);
       this._post({ command: 'branchesLoaded', branches: names });
     } catch (err: any) {
       this._post({ command: 'branchesLoaded', branches: [] });
@@ -394,7 +407,7 @@ export class PipelineDashboardPanel {
       // Also send branches for each artifact
       if (this._repoId) {
         const branches = await this.api.getBranches(this._repoId);
-        const names = (branches || []).map((b: any) => b.name as string).sort();
+        const names = this._filterActiveBranches(branches);
         this._post({ command: 'branchesLoaded', branches: names });
       }
     } catch (err: any) {

@@ -16,6 +16,7 @@ const yaml = require('js-yaml');
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 1000;
 const REQUEST_TIMEOUT_MS = 30000;
+const SILENT_REFRESH_TOAST_COOLDOWN_MS = 5 * 60 * 1000;
 
 export interface PRWithRepo extends GitPullRequest {
   repositoryName?: string;
@@ -59,6 +60,7 @@ export class AzureDevOpsApi {
   private releaseClient: ReleaseApi.IReleaseApi | undefined;
   private workItemClient: WorkItemTrackingApi.IWorkItemTrackingApi | undefined;
   private accessToken: string | undefined;
+  private lastSilentRefreshToastAt = 0;
 
   constructor(private readonly authManager: AuthManager) {}
 
@@ -77,9 +79,18 @@ export class AzureDevOpsApi {
         const status = err?.statusCode ?? err?.status ?? err?.result?.statusCode;
         const typeKey = (err?.result?.typeKey ?? err?.typeKey ?? '').toLowerCase();
         const msg = (err?.message ?? '').toLowerCase();
-        // Don't retry auth errors (401/403) or known non-transient issues
-        if (status === 401 || status === 403 || status === 404 ||
-            typeKey.includes('unauthorized') || typeKey.includes('doesnotexist')) {
+
+        // Token/session expiry: try to renew credentials once, then retry.
+        if (status === 401 || typeKey.includes('unauthorized')) {
+          const refreshed = await this.tryRefreshCredentials(attempt);
+          if (refreshed) {
+            continue;
+          }
+          throw new Error('Authentication expired. Please sign in again to Azure DevOps.');
+        }
+
+        // Don't retry known non-transient issues
+        if (status === 403 || status === 404 || typeKey.includes('doesnotexist')) {
           throw err;
         }
         // Retry on: server errors (5xx), rate limiting (429), timeouts, network errors
@@ -94,6 +105,40 @@ export class AzureDevOpsApi {
       }
     }
     throw lastError;
+  }
+
+  private async tryRefreshCredentials(attempt: number): Promise<boolean> {
+    if (attempt >= MAX_RETRIES) {
+      return false;
+    }
+
+    try {
+      const silent = await this.authManager.refreshAccessTokenSilently();
+      if (silent) {
+        this.resetConnection();
+        this.notifySilentRefresh();
+        return true;
+      }
+
+      const interactive = await this.authManager.refreshAccessTokenInteractive();
+      if (interactive) {
+        this.resetConnection();
+        return true;
+      }
+    } catch {
+      return false;
+    }
+
+    return false;
+  }
+
+  private notifySilentRefresh(): void {
+    const now = Date.now();
+    if (now - this.lastSilentRefreshToastAt < SILENT_REFRESH_TOAST_COOLDOWN_MS) {
+      return;
+    }
+    this.lastSilentRefreshToastAt = now;
+    void vscode.window.showInformationMessage('Azure DevOps session refreshed automatically.');
   }
 
   /**
