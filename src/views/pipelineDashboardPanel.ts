@@ -250,6 +250,7 @@ export class PipelineDashboardPanel {
       result: b.result,
       sourceBranch: b.sourceBranch?.replace('refs/heads/', ''),
       requestedFor: b.requestedFor?.displayName,
+      queueTime: b.queueTime,
       startTime: b.startTime,
       finishTime: b.finishTime,
       url: this._buildRunUrl(project, b.id) || b._links?.web?.href,
@@ -644,7 +645,7 @@ export class PipelineDashboardPanel {
           <h2 id="buildDetailTitle" style="margin:0;font-size:1.1em;"></h2>
         </div>
         <table class="builds-table" id="buildsTable">
-          <thead><tr><th>Run</th><th>Status</th><th>Branch</th><th>Triggered by</th><th>Duration</th><th></th></tr></thead>
+          <thead><tr><th>Run</th><th>Status</th><th>Branch</th><th>Triggered by</th><th>Started</th><th>Finished</th><th>Duration</th><th></th></tr></thead>
           <tbody id="buildsBody"></tbody>
         </table>
         <div id="timelineArea" class="timeline-panel"></div>

@@ -119,6 +119,16 @@
     return Math.floor(hrs / 24) + 'd ago';
   }
 
+  function formatDateTime(date) {
+    if (!date) return '\u2014';
+    var d = new Date(date);
+    var month = String(d.getMonth() + 1).padStart(2, '0');
+    var day = String(d.getDate()).padStart(2, '0');
+    var hrs = String(d.getHours()).padStart(2, '0');
+    var mins = String(d.getMinutes()).padStart(2, '0');
+    return month + '/' + day + ' ' + hrs + ':' + mins;
+  }
+
   function showError(msg) {
     var el = document.getElementById('errorBanner');
     el.textContent = '';
@@ -397,7 +407,7 @@
     document.getElementById('buildsBody').innerHTML = '';
     var loadingRow = document.createElement('tr');
     var loadingCell = document.createElement('td');
-    loadingCell.colSpan = 6;
+    loadingCell.colSpan = 8;
     loadingCell.className = 'loading';
     loadingCell.textContent = 'Loading...';
     loadingRow.appendChild(loadingCell);
@@ -799,7 +809,7 @@
     if (!builds || builds.length === 0) {
       var emptyRow = document.createElement('tr');
       var emptyCell = document.createElement('td');
-      emptyCell.colSpan = 6;
+      emptyCell.colSpan = 8;
       emptyCell.className = 'empty';
       emptyCell.textContent = 'No runs found.';
       emptyRow.appendChild(emptyCell);
@@ -832,6 +842,20 @@
       var tdBy = document.createElement('td');
       tdBy.textContent = b.requestedFor || '';
       tr.appendChild(tdBy);
+
+      var tdStarted = document.createElement('td');
+      tdStarted.textContent = formatDateTime(b.queueTime || b.startTime);
+      tdStarted.title = b.queueTime
+        ? new Date(b.queueTime).toLocaleString()
+        : '';
+      tr.appendChild(tdStarted);
+
+      var tdFinished = document.createElement('td');
+      tdFinished.textContent = formatDateTime(b.finishTime);
+      tdFinished.title = b.finishTime
+        ? new Date(b.finishTime).toLocaleString()
+        : '';
+      tr.appendChild(tdFinished);
 
       var tdDuration = document.createElement('td');
       tdDuration.textContent = duration(b.startTime, b.finishTime);
