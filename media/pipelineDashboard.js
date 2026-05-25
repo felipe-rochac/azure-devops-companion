@@ -37,7 +37,9 @@
   function buildImageName(build) {
     if (!containerImageTemplate || !build) return '';
     var buildNumber = build.buildNumber || '';
-    var definitionName = (build.definitionName || '').toLowerCase().replace(/[^a-z0-9._-]/g, '-');
+    var definitionName = (build.definitionName || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]/g, '-');
     var branch = (build.sourceBranch || '').replace(/^refs\/heads\//, '');
     var shortCommit = (build.sourceVersion || '').substring(0, 8);
     return containerImageTemplate
@@ -1131,7 +1133,12 @@
           '<select class="artifact-version">' +
           '<option value="">-- latest (default) --</option>';
         art.imageOptions.forEach(function (img) {
-          html += '<option value="' + escapeAttr(img) + '">' + escapeHtml(img) + '</option>';
+          html +=
+            '<option value="' +
+            escapeAttr(img) +
+            '">' +
+            escapeHtml(img) +
+            '</option>';
         });
         html += '</select></div>';
       } else {
