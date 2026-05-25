@@ -14,6 +14,7 @@
   var releaseDefinitions = [];
   var releasesLoaded = false;
   var currentReleaseDefId = null;
+  var containerImageTemplate = '';
 
   function escapeHtml(s) {
     if (!s) return '';
@@ -31,6 +32,25 @@
       .replace(/"/g, '&quot;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
+  }
+
+  function buildImageName(build) {
+    if (!containerImageTemplate || !build) return '';
+    var buildNumber = build.buildNumber || '';
+    var definitionName = (build.definitionName || '').toLowerCase().replace(/[^a-z0-9._-]/g, '-');
+    var branch = (build.sourceBranch || '').replace(/^refs\/heads\//, '');
+    var shortCommit = (build.sourceVersion || '').substring(0, 8);
+    return containerImageTemplate
+      .replace(/\{buildNumber\}/g, buildNumber)
+      .replace(/\{definitionName\}/g, definitionName)
+      .replace(/\{branch\}/g, branch)
+      .replace(/\{shortCommit\}/g, shortCommit);
+  }
+
+  function copyImageName(build) {
+    var imageName = buildImageName(build);
+    if (!imageName) return;
+    vscode.postMessage({ command: 'copyToClipboard', text: imageName });
   }
 
   function normalizeStatus(status) {
@@ -338,6 +358,20 @@
       };
     })(p.id, p.name);
     actionsDiv.appendChild(runBtn);
+
+    if (containerImageTemplate && latest) {
+      var copyBtn = document.createElement('button');
+      copyBtn.className = 'btn-icon btn-sm';
+      copyBtn.textContent = '\uD83D\uDCCB';
+      copyBtn.title = 'Copy image name';
+      copyBtn.onclick = (function (build) {
+        return function (e) {
+          e.stopPropagation();
+          copyImageName(build);
+        };
+      })(latest);
+      actionsDiv.appendChild(copyBtn);
+    }
 
     var openUrl =
       p.latestBuild && p.latestBuild.url ? p.latestBuild.url : p.url;
@@ -862,6 +896,19 @@
       tr.appendChild(tdDuration);
 
       var tdActions = document.createElement('td');
+      if (containerImageTemplate) {
+        var copyBtn = document.createElement('button');
+        copyBtn.className = 'btn-icon btn-sm';
+        copyBtn.textContent = '\uD83D\uDCCB';
+        copyBtn.title = 'Copy image name';
+        copyBtn.onclick = (function (build) {
+          return function (e) {
+            e.stopPropagation();
+            copyImageName(build);
+          };
+        })(b);
+        tdActions.appendChild(copyBtn);
+      }
       if (b.url) {
         var openBtn = document.createElement('button');
         openBtn.className = 'btn-icon btn-sm';
@@ -1061,24 +1108,36 @@
     }
     var html = '';
     artifacts.forEach(function (art) {
+      var hasImages = art.imageOptions && art.imageOptions.length > 0;
       html +=
         '<div class="artifact-row field" data-alias="' +
-        (art.alias || '') +
+        escapeAttr(art.alias || '') +
         '">';
       html +=
         '<label><strong>' +
-        (art.alias || 'Artifact') +
+        escapeHtml(art.alias || 'Artifact') +
         '</strong> <span style="font-weight:normal;color:var(--vscode-descriptionForeground);">(' +
-        (art.type || 'Build') +
-        (art.definitionName ? ' - ' + art.definitionName : '') +
+        escapeHtml(art.type || 'Build') +
+        (art.definitionName ? ' - ' + escapeHtml(art.definitionName) : '') +
         ')</span></label>';
       html += '<div style="display:flex;gap:8px;flex-wrap:wrap;">';
       html +=
         '<div style="flex:1;min-width:160px;"><label style="font-size:0.85em;">Branch</label><select class="artifact-branch" data-default-branch="' +
-        (art.defaultBranch || '') +
+        escapeAttr(art.defaultBranch || '') +
         '"><option value="">-- loading... --</option></select></div>';
-      html +=
-        '<div style="flex:1;min-width:160px;"><label style="font-size:0.85em;">Version / Image</label><input type="text" class="artifact-version" placeholder="latest (leave empty for default)"></div>';
+      if (hasImages) {
+        html +=
+          '<div style="flex:1;min-width:160px;"><label style="font-size:0.85em;">Version / Image</label>' +
+          '<select class="artifact-version">' +
+          '<option value="">-- latest (default) --</option>';
+        art.imageOptions.forEach(function (img) {
+          html += '<option value="' + escapeAttr(img) + '">' + escapeHtml(img) + '</option>';
+        });
+        html += '</select></div>';
+      } else {
+        html +=
+          '<div style="flex:1;min-width:160px;"><label style="font-size:0.85em;">Version / Image</label><input type="text" class="artifact-version" placeholder="latest (leave empty for default)"></div>';
+      }
       html += '</div></div>';
     });
     container.innerHTML = html;
@@ -1244,6 +1303,10 @@
 
     try {
       switch (msg.command) {
+        case 'configLoaded':
+          containerImageTemplate = msg.containerImageTemplate || '';
+          break;
+
         case 'navigateToBuild':
           if (msg.project) currentProject = msg.project;
           currentBuildId = msg.buildId;
@@ -1325,14 +1388,16 @@
           }
           // Also populate release artifact branch selects
           var artBranches = document.querySelectorAll('.artifact-branch');
+          var currentBranch = msg.currentBranch || '';
           artBranches.forEach(function (branchSel) {
             var defaultBranch = branchSel.dataset.defaultBranch || '';
+            var preselect = currentBranch || defaultBranch;
             branchSel.innerHTML = '<option value="">-- default --</option>';
             (msg.branches || []).forEach(function (b) {
               var opt = document.createElement('option');
               opt.value = b;
               opt.textContent = b;
-              if (b === defaultBranch) {
+              if (b === preselect) {
                 opt.selected = true;
               }
               branchSel.appendChild(opt);

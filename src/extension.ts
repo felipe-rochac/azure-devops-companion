@@ -624,7 +624,7 @@ async function setupExtension(
     }),
 
     vscode.commands.registerCommand('azureDevOpsPR.openPipelineDashboard', () => {
-      PipelineDashboardPanel.createOrShow(context.extensionUri, api, pipelineProvider.getSelectedProject(), pipelineProvider.getSelectedRepo(), pipelineProvider.getSelectedRepoName());
+      PipelineDashboardPanel.createOrShow(context.extensionUri, api, pipelineProvider.getSelectedProject(), pipelineProvider.getSelectedRepo(), pipelineProvider.getSelectedRepoName(), context.globalState);
     }),
 
     vscode.commands.registerCommand('azureDevOpsPR.openPipelineBuild', (item: any) => {
@@ -635,7 +635,7 @@ async function setupExtension(
         buildNumber: build.buildNumber ?? '',
         definitionName: build.definition?.name ?? 'Pipeline',
         project: build.project?.name || pipelineProvider.getSelectedProject(),
-      }, pipelineProvider.getSelectedRepo(), pipelineProvider.getSelectedRepoName());
+      }, pipelineProvider.getSelectedRepo(), pipelineProvider.getSelectedRepoName(), context.globalState);
     }),
 
     vscode.commands.registerCommand('azureDevOpsPR.openPipelineBuildInBrowser', (item: any) => {

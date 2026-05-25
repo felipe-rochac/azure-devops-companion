@@ -1,3 +1,46 @@
+## [1.4.1] - 2026-05-25
+### Added
+- **Copy Image Name** button on pipeline run rows and pipeline cards (uses `containerImageTemplate` setting)
+- **Image dropdown on releases**: "Version / Image" field now shows a dropdown of recent build image names instead of a text input (when `containerImageTemplate` is configured)
+- Deployment branch defaults to the **current workspace branch** when creating a release
+
+### Fixed
+- **Starred/favorite pipelines not persisting** across sessions — `globalState` was not being passed to the Pipeline Dashboard panel
+
+## [1.4.0] - 2026-05-22
+### Added
+- **Started / Finished date columns** in the pipeline builds table with formatted timestamps and full-date tooltips
+- Duration column in pipeline build runs
+
+## [1.3.9] - 2026-05-18
+### Added
+- **Silent token refresh**: automatically refreshes expired OAuth tokens without re-prompting
+- Interactive token re-authentication fallback when silent refresh fails
+
+### Fixed
+- **Branch dropdown showing stale/inactive branches** — now filters to branches with commit activity in the last 6 months
+
+## [1.3.7] - 2026-05-10
+### Added
+- **YAML runtime parameters**: automatically parses `parameters:` from pipeline YAML files and renders them as form controls (text, checkbox, radio, dropdown)
+- Support for classic pipeline `processParameters` inputs
+- Pipeline parameter types: boolean (checkbox), pickList (dropdown), radio (≤5 options), and free-text
+- `PipelineParameterMetadata` API for fetching variable overrides and template parameters
+
+## [1.3.6] - 2026-05-04
+### Added
+- **Microsoft Entra (OAuth) authentication** — replaces PAT-based auth with VS Code's built-in Microsoft auth provider
+- **Release management**: view release definitions, recent releases, and create new releases with artifact/branch overrides
+- **Favorite pipelines**: star/unstar pipelines with favorites shown first (grouped or flat view)
+- **Run pipeline with parameters**: queue builds with branch selection, variable overrides, and template parameter inputs
+- **Pipeline view modes**: flat view and grouped-by-path view with collapsible groups
+- Release environment status badges (succeeded, in-progress, rejected, not-started)
+- Pipeline search/filter box in the dashboard header
+
+### Changed
+- Authentication flow migrated from PAT input box to Microsoft Entra OAuth sign-in
+- API connection now uses OAuth bearer tokens managed by VS Code auth provider
+
 ## [1.2.2] - 2026-04-29
 ### Added
 - Pipelines: triggered and completed dates shown in tree item descriptions and tooltips

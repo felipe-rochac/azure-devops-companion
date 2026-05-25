@@ -121,6 +121,8 @@ export class PipelineDashboardPanel {
           result: d.latestBuild.result,
           finishTime: d.latestBuild.finishTime,
           sourceBranch: d.latestBuild.sourceBranch,
+          sourceVersion: d.latestBuild.sourceVersion,
+          definitionName: d.name,
           url: this._buildRunUrl(this._project, d.latestBuild.id),
         } : null,
         url: this._buildDefinitionUrl(this._project, d.id) || d._links?.web?.href,
@@ -159,6 +161,7 @@ export class PipelineDashboardPanel {
             case 'ready':
               console.log('[Pipeline Dashboard] Received ready from webview');
               this._flushPending();
+              this._post({ command: 'configLoaded', containerImageTemplate: vscode.workspace.getConfiguration('azureDevOpsPR').get<string>('containerImageTemplate', '') });
               console.log('[Pipeline Dashboard] Calling _sendPipelines, project:', this._project, 'repoId:', this._repoId);
               await this._sendPipelines();
               console.log('[Pipeline Dashboard] _sendPipelines completed');
@@ -201,6 +204,12 @@ export class PipelineDashboardPanel {
                 vscode.env.openExternal(vscode.Uri.parse(msg.url));
               }
               break;
+            case 'copyToClipboard':
+              if (msg.text) {
+                vscode.env.clipboard.writeText(msg.text);
+                vscode.window.showInformationMessage(`Copied: ${msg.text}`);
+              }
+              break;
           }
         } catch (err: any) {
           const message = `Dashboard error: ${err?.message ?? err}`;
@@ -234,6 +243,8 @@ export class PipelineDashboardPanel {
         result: d.latestBuild.result,
         finishTime: d.latestBuild.finishTime,
         sourceBranch: d.latestBuild.sourceBranch,
+        sourceVersion: d.latestBuild.sourceVersion,
+        definitionName: d.name,
         url: this._buildRunUrl(project, d.latestBuild.id),
       } : null,
       url: this._buildDefinitionUrl(project, d.id) || d._links?.web?.href,
@@ -249,6 +260,8 @@ export class PipelineDashboardPanel {
       status: b.status,
       result: b.result,
       sourceBranch: b.sourceBranch?.replace('refs/heads/', ''),
+      sourceVersion: b.sourceVersion,
+      definitionName: b.definition?.name,
       requestedFor: b.requestedFor?.displayName,
       queueTime: b.queueTime,
       startTime: b.startTime,
@@ -325,17 +338,33 @@ export class PipelineDashboardPanel {
       .sort();
   }
 
+  private _getCurrentBranch(): string | undefined {
+    try {
+      const gitExtension = vscode.extensions.getExtension('vscode.git')?.exports;
+      if (gitExtension) {
+        const gitApi = gitExtension.getAPI(1);
+        const repo = gitApi.repositories[0];
+        if (repo) {
+          return repo.state.HEAD?.name;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return undefined;
+  }
+
   private async _handleLoadBranches() {
     if (!this._repoId) {
-      this._post({ command: 'branchesLoaded', branches: [] });
+      this._post({ command: 'branchesLoaded', branches: [], currentBranch: this._getCurrentBranch() });
       return;
     }
     try {
       const branches = await this.api.getBranches(this._repoId);
       const names = this._filterActiveBranches(branches);
-      this._post({ command: 'branchesLoaded', branches: names });
+      this._post({ command: 'branchesLoaded', branches: names, currentBranch: this._getCurrentBranch() });
     } catch (err: any) {
-      this._post({ command: 'branchesLoaded', branches: [] });
+      this._post({ command: 'branchesLoaded', branches: [], currentBranch: this._getCurrentBranch() });
     }
   }
 
@@ -398,18 +427,49 @@ export class PipelineDashboardPanel {
   private async _handleLoadReleaseDefinitionDetail(definitionId: number, project: string) {
     try {
       const def = await this.api.getReleaseDefinition(definitionId, project);
-      const artifacts = (def.artifacts || []).map((a: any) => ({
-        alias: a.alias,
-        type: a.type,
-        definitionName: a.definitionReference?.definition?.name,
-        defaultBranch: a.definitionReference?.defaultVersionBranch?.id || a.definitionReference?.branch?.id,
+      const containerImageTemplate = vscode.workspace.getConfiguration('azureDevOpsPR').get<string>('containerImageTemplate', '');
+
+      const artifacts = await Promise.all((def.artifacts || []).map(async (a: any) => {
+        const artifact: any = {
+          alias: a.alias,
+          type: a.type,
+          definitionName: a.definitionReference?.definition?.name,
+          definitionId: a.definitionReference?.definition?.id ? parseInt(a.definitionReference.definition.id, 10) : undefined,
+          defaultBranch: a.definitionReference?.defaultVersionBranch?.id || a.definitionReference?.branch?.id,
+          imageOptions: [] as string[],
+        };
+
+        // Fetch recent builds for this artifact's build definition to populate image names
+        if (artifact.definitionId && containerImageTemplate) {
+          try {
+            const builds = await this.api.getBuildsForDefinition(artifact.definitionId, project, 10);
+            artifact.imageOptions = builds
+              .filter((b: any) => b.buildNumber)
+              .map((b: any) => {
+                const buildNumber = b.buildNumber ?? '';
+                const defName = (artifact.definitionName ?? '').toLowerCase().replace(/[^a-z0-9._-]/g, '-');
+                const branch = (b.sourceBranch ?? '').replace(/^refs\/heads\//, '');
+                const shortCommit = (b.sourceVersion ?? '').substring(0, 8);
+                return containerImageTemplate
+                  .replace(/\{buildNumber\}/g, buildNumber)
+                  .replace(/\{definitionName\}/g, defName)
+                  .replace(/\{branch\}/g, branch)
+                  .replace(/\{shortCommit\}/g, shortCommit);
+              });
+          } catch {
+            // ignore — imageOptions stays empty
+          }
+        }
+
+        return artifact;
       }));
+
       this._post({ command: 'releaseDefinitionDetailLoaded', definitionId, artifacts });
       // Also send branches for each artifact
       if (this._repoId) {
         const branches = await this.api.getBranches(this._repoId);
         const names = this._filterActiveBranches(branches);
-        this._post({ command: 'branchesLoaded', branches: names });
+        this._post({ command: 'branchesLoaded', branches: names, currentBranch: this._getCurrentBranch() });
       }
     } catch (err: any) {
       this._post({ command: 'error', message: `Failed to load release definition detail: ${err?.message ?? err}` });
