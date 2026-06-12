@@ -248,11 +248,11 @@ export class PRDetailPanel {
 
     if (!alreadyOnBranch) {
       const confirm = await vscode.window.showInformationMessage(
-        `This will checkout branch "${branchName}" and open all ${this._changedFiles.length} changed files so Copilot can review them.\n\nAny uncommitted changes will need to be stashed first.`,
+        `This will checkout branch "${branchName}" and open all ${this._changedFiles.length} changed diffs so Copilot can review only PR changes.\n\nAny uncommitted changes will need to be stashed first.`,
         { modal: true },
-        'Checkout & Open Files'
+        'Checkout & Open Diffs'
       );
-      if (confirm !== 'Checkout & Open Files') {
+      if (confirm !== 'Checkout & Open Diffs') {
         this._panel.webview.postMessage({ command: 'reviewStatus', status: 'error' });
         return;
       }
@@ -264,43 +264,40 @@ export class PRDetailPanel {
         await this.gitHelper.checkoutBranch(branchName);
       }
 
-      // Find the workspace folder root
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      if (!workspaceFolders || workspaceFolders.length === 0) {
-        vscode.window.showErrorMessage('No workspace folder open.');
-        this._panel.webview.postMessage({ command: 'reviewStatus', status: 'error' });
-        return;
-      }
-      const rootUri = workspaceFolders[0].uri;
-
-      // Open each changed file on disk
-      const openedFiles: string[] = [];
-      for (const file of this._changedFiles) {
-        if (file.changeType === 'delete') { continue; }
-        const filePath = file.path.startsWith('/') ? file.path.substring(1) : file.path;
-        const fileUri = vscode.Uri.joinPath(rootUri, filePath);
+      // Open each changed file as a diff so review stays focused on changed hunks.
+      const openedDiffs: string[] = [];
+      for (let i = 0; i < this._changedFiles.length; i++) {
+        const changed = this._changedFiles[i];
         try {
-          await vscode.workspace.fs.stat(fileUri); // verify it exists
-          await vscode.window.showTextDocument(fileUri, { preview: false, preserveFocus: true });
-          openedFiles.push(filePath);
+          await this.handleOpenDiff(i);
+          const filePath = changed.path.startsWith('/') ? changed.path.substring(1) : changed.path;
+          openedDiffs.push(filePath);
         } catch {
-          // File may not exist locally (e.g. in a different repo root)
+          // Ignore individual diff open failures and continue.
         }
       }
 
       this._panel.webview.postMessage({ command: 'reviewStatus', status: 'ready' });
 
-      // Build a focused Copilot review prompt scoped to the changed files
-      const fileList = openedFiles.map(f => `- ${f}`).join('\n');
+      // Build a focused Copilot review prompt scoped to PR diffs only
+      const fileList = this._changedFiles
+        .map(f => `- [${f.changeType}] ${f.path.startsWith('/') ? f.path.substring(1) : f.path}`)
+        .join('\n');
       const prTitle = this.pr.title ?? 'Untitled PR';
       const prDesc = this.pr.description?.substring(0, 500) ?? '';
 
       const defaultPrompt = [
-        `Review the following pull request changes for errors, bugs, typos, and mistakes ONLY. Do NOT suggest style improvements, refactoring, or enhancements.`,
+        `Review ONLY the changes shown in the opened PR diff editors. Do not review entire files and do not analyze untouched code except minimal local context needed to verify correctness.`,
         ``,
-        `For each issue found, apply the fix directly to the file. Only fix actual bugs, errors, typos, and mistakes — do not refactor or change style.`,
-        `After applying all fixes, provide a summary of what was changed and why.`,
-        `If no issues are found, say "No bugs, errors, typos, or mistakes found."`,
+        `Find only real defects in changed hunks: bugs, logic mistakes, safety issues, and typos that affect behavior. Do not suggest style/refactor/perf enhancements unless they fix a concrete defect introduced by the diff.`,
+        ``,
+        `For each finding, include:`,
+        `1) The changed hunk/file where it appears`,
+        `2) Why it is a defect`,
+        `3) Potential flow impact/regression risk this change can cause (downstream calls, control flow, edge cases, state transitions)`,
+        `4) A precise fix limited to the changed area (or very close required lines only).`,
+        ``,
+        `If no issues are found, say exactly: "No defects found in changed hunks."`,
       ].join('\n');
 
       const userPrompt = customPrompt?.trim() || defaultPrompt;
@@ -319,10 +316,15 @@ export class PRDetailPanel {
       // Always copy prompt to clipboard as a reliable fallback
       await vscode.env.clipboard.writeText(fullPrompt);
 
-      // Try to open Copilot Chat and pre-fill the prompt
-      // The chat.open command accepts { query, isPartialQuery } but
-      // agent mode selection is not directly supported via command args.
-      // We open chat with the prompt pre-filled; the user can switch modes in the chat UI.
+      // Always start a fresh Copilot Chat session for PR reviews.
+      try {
+        await vscode.commands.executeCommand('workbench.action.chat.newChat');
+      } catch {
+        // Ignore if the command is unavailable in this VS Code build.
+      }
+
+      // Open Copilot Chat and pre-fill the prompt.
+      // Agent mode selection is not directly supported via command args.
       try {
         const query = mode === 'ask' ? `@workspace ${fullPrompt}` : fullPrompt;
         await vscode.commands.executeCommand('workbench.action.chat.open', { query, isPartialQuery: false });
@@ -335,7 +337,7 @@ export class PRDetailPanel {
       }
 
       vscode.window.showInformationMessage(
-        `✅ Opened ${openedFiles.length} files and sent prompt to Copilot Chat. Prompt is also in your clipboard (Ctrl+V) if needed.`
+        `✅ Opened ${openedDiffs.length} diffs and sent prompt to a new Copilot Chat session. Prompt is also in your clipboard (Ctrl+V) if needed.`
       );
     } catch (err: any) {
       this._panel.webview.postMessage({ command: 'reviewStatus', status: 'error' });
@@ -478,6 +480,12 @@ export class PRDetailPanel {
       ].join('\n');
 
       await vscode.env.clipboard.writeText(fullPrompt);
+
+      try {
+        await vscode.commands.executeCommand('workbench.action.chat.newChat');
+      } catch {
+        // Ignore if unavailable.
+      }
 
       try {
         await vscode.commands.executeCommand('workbench.action.chat.open', { query: fullPrompt, isPartialQuery: false });
@@ -1107,7 +1115,7 @@ export class PRDetailPanel {
     function refresh() { wvLog('refresh clicked'); vscode.postMessage({ command: 'refresh' }); }
     function openDiff(index) { wvLog('openDiff clicked: ' + index); vscode.postMessage({ command: 'openDiff', index }); }
     function openAllDiffs() { wvLog('openAllDiffs clicked'); vscode.postMessage({ command: 'openAllDiffs' }); }
-    var defaultCopilotPrompt = 'Review the following pull request changes for errors, bugs, typos, and mistakes ONLY. Do NOT suggest style improvements, refactoring, or enhancements.' + String.fromCharCode(10) + String.fromCharCode(10) + 'For each issue found, apply the fix directly to the file. Only fix actual bugs, errors, typos, and mistakes \\u2014 do not refactor or change style.' + String.fromCharCode(10) + 'After applying all fixes, provide a summary of what was changed and why.' + String.fromCharCode(10) + 'If no issues are found, say "No bugs, errors, typos, or mistakes found."';
+    var defaultCopilotPrompt = 'Review ONLY the changes shown in the opened PR diff editors. Do not review entire files and do not analyze untouched code except minimal local context needed to verify correctness.' + String.fromCharCode(10) + String.fromCharCode(10) + 'Find only real defects in changed hunks: bugs, logic mistakes, safety issues, and typos that affect behavior. Do not suggest style/refactor/perf enhancements unless they fix a concrete defect introduced by the diff.' + String.fromCharCode(10) + String.fromCharCode(10) + 'For each finding, include:' + String.fromCharCode(10) + '1) The changed hunk/file where it appears' + String.fromCharCode(10) + '2) Why it is a defect' + String.fromCharCode(10) + '3) Potential flow impact/regression risk this change can cause (downstream calls, control flow, edge cases, state transitions)' + String.fromCharCode(10) + '4) A precise fix limited to the changed area (or very close required lines only).' + String.fromCharCode(10) + String.fromCharCode(10) + 'If no issues are found, say exactly: "No defects found in changed hunks."';
 
     function toggleCopilotPrompt() {
       var section = document.getElementById('copilotPromptSection');

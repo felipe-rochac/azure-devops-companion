@@ -97,6 +97,20 @@ export class PipelineDashboardPanel {
     } catch (err: any) {
       this._post({ command: 'error', message: `Failed to load timeline: ${err?.message ?? err}` });
     }
+    // Also fetch and send build changes
+    try {
+      const changes = await this.api.getBuildChanges(build.id, project);
+      const mapped = (changes || []).map((c: any) => ({
+        id: c.id,
+        message: c.message,
+        author: c.author?.displayName,
+        timestamp: c.timestamp,
+        location: c.displayUri || c.location,
+      }));
+      this._post({ command: 'buildChangesLoaded', buildId: build.id, changes: mapped });
+    } catch (err: any) {
+      this._post({ command: 'buildChangesLoaded', buildId: build.id, changes: [] });
+    }
   }
 
   private async _sendPipelines() {
@@ -175,6 +189,9 @@ export class PipelineDashboardPanel {
             case 'loadTimeline':
               await this._handleLoadTimeline(msg.buildId, msg.project);
               break;
+            case 'loadBuildChanges':
+              await this._handleLoadBuildChanges(msg.buildId, msg.project);
+              break;
             case 'queueBuild':
               await this._handleQueueBuild(msg.definitionId, msg.branch, msg.project, msg.parameters, msg.templateParameters);
               break;
@@ -198,6 +215,21 @@ export class PipelineDashboardPanel {
               break;
             case 'createRelease':
               await this._handleCreateRelease(msg.definitionId, msg.description, msg.project, msg.artifacts);
+              break;
+            case 'loadDeployOptions':
+              await this._handleLoadDeployOptions(msg.buildDefinitionId, msg.project);
+              break;
+            case 'deployBuild':
+              await this._handleDeployBuild(msg.releaseDefinitionId, msg.buildNumber, msg.sourceBranch, msg.project);
+              break;
+            case 'autoDeployBuild':
+              await this._handleAutoDeployBuild(msg.buildDefinitionId, msg.releaseDefinitionId, msg.buildNumber, msg.sourceBranch, msg.project, msg.environment);
+              break;
+            case 'loadAutoDeployOptions':
+              await this._handleLoadAutoDeployOptions(msg.buildDefinitionId, msg.project);
+              break;
+            case 'loadAutoDeployEnvs':
+              await this._handleLoadAutoDeployEnvs(msg.releaseDefinitionId, msg.project);
               break;
             case 'openInBrowser':
               if (msg.url) {
@@ -300,6 +332,22 @@ export class PipelineDashboardPanel {
     const stages = timeline?.records ? this._buildTimelineHierarchy(timeline.records) : [];
     console.log('[Pipeline Dashboard] Hierarchy: stages:', stages.length, stages.map((s: any) => s.name + '(' + s.jobs.length + ' jobs)').join(', '));
     this._post({ command: 'timelineLoaded', buildId, stages });
+  }
+
+  private async _handleLoadBuildChanges(buildId: number, project: string) {
+    try {
+      const changes = await this.api.getBuildChanges(buildId, project);
+      const mapped = (changes || []).map((c: any) => ({
+        id: c.id,
+        message: c.message,
+        author: c.author?.displayName,
+        timestamp: c.timestamp,
+        location: c.displayUri || c.location,
+      }));
+      this._post({ command: 'buildChangesLoaded', buildId, changes: mapped });
+    } catch (err: any) {
+      this._post({ command: 'buildChangesLoaded', buildId, changes: [] });
+    }
   }
 
   private async _handleQueueBuild(definitionId: number, branch: string, project: string, parameters?: Record<string, string>, templateParameters?: Record<string, string>) {
@@ -490,6 +538,110 @@ export class PipelineDashboardPanel {
       });
     } catch (err: any) {
       this._post({ command: 'error', message: `Failed to create release: ${err?.message ?? err}` });
+    }
+  }
+
+  private async _handleLoadDeployOptions(buildDefinitionId: number, project: string) {
+    try {
+      const definitions = await this.api.getReleaseDefinitionsForBuild(buildDefinitionId, project);
+      const mapped = (definitions || []).map((d: any) => ({
+        id: d.id,
+        name: d.name,
+      }));
+      this._post({ command: 'deployOptionsLoaded', releaseDefinitions: mapped });
+    } catch (err: any) {
+      this._post({ command: 'deployOptionsLoaded', releaseDefinitions: [] });
+    }
+  }
+
+  private async _handleDeployBuild(releaseDefinitionId: number, buildNumber: string, sourceBranch: string, project: string, environment?: string) {
+    try {
+      const def = await this.api.getReleaseDefinition(releaseDefinitionId, project);
+      // Build artifact overrides: set the version (buildNumber) and branch for each Build artifact
+      const artifacts = (def.artifacts || [])
+        .filter((a: any) => a.type === 'Build')
+        .map((a: any) => ({
+          alias: a.alias,
+          version: buildNumber || undefined,
+          branch: sourceBranch || undefined,
+        }));
+
+      // If an environment is selected, set all OTHER environments as manual (so only the selected one auto-deploys)
+      let manualEnvironments: string[] | undefined;
+      if (environment && def.environments?.length) {
+        manualEnvironments = (def.environments as any[])
+          .filter((e: any) => e.name !== environment)
+          .map((e: any) => e.name);
+      }
+
+      const description = `Deployed from build #${buildNumber}`;
+      const release = await this.api.createRelease(releaseDefinitionId, description, project, artifacts, manualEnvironments);
+      const envSuffix = environment ? ` to ${environment}` : '';
+      vscode.window.showInformationMessage(`Release "${release.name}" created from build #${buildNumber}${envSuffix}!`);
+      this._post({
+        command: 'releaseCreated',
+        release: {
+          id: release.id,
+          name: release.name,
+          url: release._links?.web?.href,
+        },
+      });
+    } catch (err: any) {
+      this._post({ command: 'error', message: `Failed to deploy: ${err?.message ?? err}` });
+    }
+  }
+
+  private async _handleAutoDeployBuild(buildDefinitionId: number, releaseDefinitionId: number | null, buildNumber: string, sourceBranch: string, project: string, environment?: string) {
+    try {
+      let defId = releaseDefinitionId;
+
+      if (!defId) {
+        // No pre-selected definition — find one
+        const definitions = await this.api.getReleaseDefinitionsForBuild(buildDefinitionId, project);
+        const mapped = (definitions || []).map((d: any) => ({ id: d.id, name: d.name }));
+
+        if (mapped.length === 0) {
+          this._post({ command: 'autoDeployResult', status: 'noDefinitions' });
+          return;
+        }
+
+        if (mapped.length > 1) {
+          this._post({ command: 'autoDeployResult', status: 'multipleDefinitions', releaseDefinitions: mapped });
+          return;
+        }
+
+        defId = mapped[0].id;
+      }
+
+      // Deploy with optional environment targeting
+      await this._handleDeployBuild(defId!, buildNumber, sourceBranch, project, environment);
+      this._post({ command: 'autoDeployResult', status: 'deployed' });
+    } catch (err: any) {
+      this._post({ command: 'error', message: `Auto-deploy failed: ${err?.message ?? err}` });
+    }
+  }
+
+  private async _handleLoadAutoDeployOptions(buildDefinitionId: number, project: string) {
+    try {
+      const definitions = await this.api.getReleaseDefinitionsForBuild(buildDefinitionId, project);
+      const mapped = (definitions || []).map((d: any) => ({ id: d.id, name: d.name }));
+      this._post({ command: 'autoDeployOptionsLoaded', releaseDefinitions: mapped });
+    } catch (err: any) {
+      this._post({ command: 'autoDeployOptionsLoaded', releaseDefinitions: [] });
+    }
+  }
+
+  private async _handleLoadAutoDeployEnvs(releaseDefinitionId: number, project: string) {
+    try {
+      const def = await this.api.getReleaseDefinition(releaseDefinitionId, project);
+      const envs = (def.environments || []).map((e: any) => ({
+        id: e.id,
+        name: e.name,
+        rank: e.rank,
+      }));
+      this._post({ command: 'autoDeployEnvsLoaded', environments: envs });
+    } catch (err: any) {
+      this._post({ command: 'autoDeployEnvsLoaded', environments: [] });
     }
   }
 
@@ -709,6 +861,7 @@ export class PipelineDashboardPanel {
           <tbody id="buildsBody"></tbody>
         </table>
         <div id="timelineArea" class="timeline-panel"></div>
+        <div id="buildChangesArea"></div>
       </div>
     </div>
     <div id="tab-releases" class="view-tab-content">
@@ -749,6 +902,17 @@ export class PipelineDashboardPanel {
       <div class="modal-actions">
         <button class="btn-secondary" onclick="closeReleaseModal()">Cancel</button>
         <button class="btn-primary" onclick="submitRelease()">Create Release</button>
+      </div>
+    </div>
+  </div>
+  <div id="deployModal" class="modal-overlay">
+    <div class="modal">
+      <h2>\uD83D\uDE80 Deploy Build</h2>
+      <div class="field"><label>Build</label><div id="deployBuildLabel" style="padding:5px 10px;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border);border-radius:var(--radius);font-size:0.95em;"></div></div>
+      <div class="field"><label>Release Definition</label><select id="deployDefSelect"><option value="">-- loading... --</option></select></div>
+      <div class="modal-actions">
+        <button class="btn-secondary" onclick="closeDeployModal()">Cancel</button>
+        <button class="btn-primary" onclick="submitDeploy()">\uD83D\uDE80 Deploy</button>
       </div>
     </div>
   </div>

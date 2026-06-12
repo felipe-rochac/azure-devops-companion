@@ -15,6 +15,13 @@
   var releasesLoaded = false;
   var currentReleaseDefId = null;
   var containerImageTemplate = '';
+  var autoDeployEnabled = false;
+  var wasRunning = false;
+  var currentBuildForTimeline = null;
+  var autoDeployReleaseDefs = [];
+  var autoDeploySelectedDefId = null;
+  var autoDeploySelectedEnv = null;
+  var autoDeployEnvs = [];
 
   function escapeHtml(s) {
     if (!s) return '';
@@ -449,6 +456,7 @@
     loadingRow.appendChild(loadingCell);
     document.getElementById('buildsBody').appendChild(loadingRow);
     document.getElementById('timelineArea').innerHTML = '';
+    document.getElementById('buildChangesArea').innerHTML = '';
     vscode.postMessage({
       command: 'loadBuilds',
       definitionId: definitionId,
@@ -459,6 +467,13 @@
   window.backToPipelines = function () {
     currentDefinitionId = null;
     currentBuildId = null;
+    autoDeployEnabled = false;
+    wasRunning = false;
+    currentBuildForTimeline = null;
+    autoDeployReleaseDefs = [];
+    autoDeploySelectedDefId = null;
+    autoDeploySelectedEnv = null;
+    autoDeployEnvs = [];
     if (autoRefreshTimer) clearInterval(autoRefreshTimer);
     document.getElementById('pipelineLabel').classList.remove('visible');
     document.getElementById('breadcrumbSep').classList.remove('visible');
@@ -477,8 +492,10 @@
     }
   };
 
-  window.viewTimeline = function (buildId, buildNumber) {
+  window.viewTimeline = function (buildId, buildNumber, build) {
     currentBuildId = buildId;
+    currentBuildForTimeline = build || null;
+    wasRunning = false;
     if (autoRefreshTimer) clearInterval(autoRefreshTimer);
     var area = document.getElementById('timelineArea');
     area.textContent = '';
@@ -488,6 +505,11 @@
     area.appendChild(loadDiv);
     vscode.postMessage({
       command: 'loadTimeline',
+      buildId: buildId,
+      project: currentProject,
+    });
+    vscode.postMessage({
+      command: 'loadBuildChanges',
       buildId: buildId,
       project: currentProject,
     });
@@ -765,6 +787,43 @@
     window.closeReleaseModal();
   };
 
+  // --- Deploy from build functions ---
+  var deployBuildData = null;
+
+  window.openDeployModal = function (build) {
+    deployBuildData = build;
+    var modal = document.getElementById('deployModal');
+    document.getElementById('deployBuildLabel').textContent =
+      '#' + (build.buildNumber || '') + ' \u00B7 ' + (build.sourceBranch || '');
+    document.getElementById('deployDefSelect').innerHTML =
+      '<option value="">-- loading release definitions... --</option>';
+    document.getElementById('deployDefSelect').disabled = true;
+    modal.classList.add('visible');
+    vscode.postMessage({
+      command: 'loadDeployOptions',
+      buildDefinitionId: currentDefinitionId,
+      project: currentProject,
+    });
+  };
+
+  window.closeDeployModal = function () {
+    document.getElementById('deployModal').classList.remove('visible');
+    deployBuildData = null;
+  };
+
+  window.submitDeploy = function () {
+    var defId = parseInt(document.getElementById('deployDefSelect').value);
+    if (!defId || !deployBuildData) return;
+    vscode.postMessage({
+      command: 'deployBuild',
+      releaseDefinitionId: defId,
+      buildNumber: deployBuildData.buildNumber,
+      sourceBranch: deployBuildData.sourceBranch,
+      project: currentProject,
+    });
+    window.closeDeployModal();
+  };
+
   function renderReleases(releases) {
     var container = document.getElementById('releasesList');
     container.innerHTML = '';
@@ -854,11 +913,11 @@
     }
     builds.forEach(function (b) {
       var tr = document.createElement('tr');
-      tr.onclick = (function (id, num) {
+      tr.onclick = (function (id, num, build) {
         return function () {
-          window.viewTimeline(id, num);
+          window.viewTimeline(id, num, build);
         };
-      })(b.id, b.buildNumber);
+      })(b.id, b.buildNumber, b);
 
       var tdRun = document.createElement('td');
       var runLink = document.createElement('span');
@@ -898,6 +957,22 @@
       tr.appendChild(tdDuration);
 
       var tdActions = document.createElement('td');
+      // Deploy button — show for completed builds (status=2 means completed)
+      var buildStatus = normalizeStatus(b.status);
+      var buildResult = normalizeResult(b.result);
+      if (buildStatus === 2 && buildResult === 2) {
+        var deployBtn = document.createElement('button');
+        deployBtn.className = 'btn-icon btn-sm';
+        deployBtn.textContent = '\uD83D\uDE80';
+        deployBtn.title = 'Deploy this build';
+        deployBtn.onclick = (function (build) {
+          return function (e) {
+            e.stopPropagation();
+            window.openDeployModal(build);
+          };
+        })(b);
+        tdActions.appendChild(deployBtn);
+      }
       if (containerImageTemplate) {
         var copyBtn = document.createElement('button');
         copyBtn.className = 'btn-icon btn-sm';
@@ -983,6 +1058,112 @@
       note.className = 'auto-refresh-note';
       note.textContent = 'Auto-refreshing every 10s while running...';
       area.appendChild(note);
+
+      // Auto-deploy checkbox
+      if (currentBuildForTimeline) {
+        var autoDeployDiv = document.createElement('div');
+        autoDeployDiv.style.cssText =
+          'margin:8px 0;display:flex;flex-direction:column;gap:8px;';
+        var cbRow = document.createElement('div');
+        cbRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.id = 'autoDeployCheckbox';
+        cb.checked = autoDeployEnabled;
+        cb.onchange = function () {
+          autoDeployEnabled = cb.checked;
+          var configArea = document.getElementById('autoDeployConfig');
+          if (cb.checked) {
+            configArea.style.display = 'flex';
+            if (autoDeployReleaseDefs.length === 0) {
+              vscode.postMessage({
+                command: 'loadAutoDeployOptions',
+                buildDefinitionId: currentDefinitionId,
+                project: currentProject,
+              });
+            }
+          } else {
+            configArea.style.display = 'none';
+          }
+        };
+        var lbl = document.createElement('label');
+        lbl.htmlFor = 'autoDeployCheckbox';
+        lbl.textContent = '\uD83D\uDE80 Auto-deploy when build succeeds';
+        lbl.style.cssText = 'cursor:pointer;font-size:0.9em;';
+        cbRow.appendChild(cb);
+        cbRow.appendChild(lbl);
+        autoDeployDiv.appendChild(cbRow);
+
+        var configArea = document.createElement('div');
+        configArea.id = 'autoDeployConfig';
+        configArea.style.cssText =
+          'display:' +
+          (autoDeployEnabled ? 'flex' : 'none') +
+          ';gap:8px;flex-wrap:wrap;padding-left:24px;';
+
+        var defLabel = document.createElement('label');
+        defLabel.textContent = 'Release Def:';
+        defLabel.style.cssText = 'font-size:0.85em;align-self:center;';
+        configArea.appendChild(defLabel);
+        var defSel = document.createElement('select');
+        defSel.id = 'autoDeployDefSelect';
+        defSel.style.cssText = 'flex:1;min-width:140px;';
+        if (autoDeployReleaseDefs.length === 0) {
+          defSel.innerHTML = '<option value="">-- loading... --</option>';
+          defSel.disabled = true;
+        } else {
+          defSel.innerHTML = '';
+          autoDeployReleaseDefs.forEach(function (d) {
+            var opt = document.createElement('option');
+            opt.value = d.id;
+            opt.textContent = d.name;
+            if (autoDeploySelectedDefId && d.id === autoDeploySelectedDefId)
+              opt.selected = true;
+            defSel.appendChild(opt);
+          });
+          defSel.disabled = false;
+        }
+        defSel.onchange = function () {
+          autoDeploySelectedDefId = parseInt(defSel.value) || null;
+          // Load environments for selected def
+          if (autoDeploySelectedDefId) {
+            vscode.postMessage({
+              command: 'loadAutoDeployEnvs',
+              releaseDefinitionId: autoDeploySelectedDefId,
+              project: currentProject,
+            });
+          }
+        };
+        configArea.appendChild(defSel);
+
+        var envLabel = document.createElement('label');
+        envLabel.textContent = 'Environment:';
+        envLabel.style.cssText = 'font-size:0.85em;align-self:center;';
+        configArea.appendChild(envLabel);
+        var envSel = document.createElement('select');
+        envSel.id = 'autoDeployEnvSelect';
+        envSel.style.cssText = 'flex:1;min-width:140px;';
+        if (autoDeployEnvs.length === 0) {
+          envSel.innerHTML = '<option value="">All (default)</option>';
+        } else {
+          envSel.innerHTML = '<option value="">All environments</option>';
+          autoDeployEnvs.forEach(function (env) {
+            var opt = document.createElement('option');
+            opt.value = env.name;
+            opt.textContent = env.name;
+            if (autoDeploySelectedEnv && env.name === autoDeploySelectedEnv)
+              opt.selected = true;
+            envSel.appendChild(opt);
+          });
+        }
+        envSel.onchange = function () {
+          autoDeploySelectedEnv = envSel.value || null;
+        };
+        configArea.appendChild(envSel);
+
+        autoDeployDiv.appendChild(configArea);
+        area.appendChild(autoDeployDiv);
+      }
     }
 
     stages.forEach(function (stage) {
@@ -1090,6 +1271,33 @@
       area.appendChild(stageDiv);
     });
 
+    // Detect build completion transition: was running → now finished successfully
+    if (
+      wasRunning &&
+      !hasRunning &&
+      !hasFailed &&
+      autoDeployEnabled &&
+      currentBuildForTimeline
+    ) {
+      autoDeployEnabled = false; // one-shot
+      var adNote = document.createElement('div');
+      adNote.style.cssText =
+        'margin:8px 0;padding:8px 12px;background:var(--vscode-editorInfo-background, rgba(0,120,212,0.1));border:1px solid var(--vscode-editorInfo-foreground, #007acc);border-radius:4px;font-size:0.9em;';
+      adNote.textContent =
+        '\uD83D\uDE80 Build succeeded! Triggering auto-deploy...';
+      area.appendChild(adNote);
+      vscode.postMessage({
+        command: 'autoDeployBuild',
+        buildDefinitionId: currentDefinitionId,
+        releaseDefinitionId: autoDeploySelectedDefId || null,
+        environment: autoDeploySelectedEnv || null,
+        buildNumber: currentBuildForTimeline.buildNumber,
+        sourceBranch: currentBuildForTimeline.sourceBranch,
+        project: currentProject,
+      });
+    }
+    wasRunning = hasRunning;
+
     if (autoRefreshTimer) clearInterval(autoRefreshTimer);
     if (hasRunning && currentBuildId) {
       autoRefreshTimer = setInterval(function () {
@@ -1100,6 +1308,81 @@
         });
       }, 10000);
     }
+  }
+
+  function renderBuildChanges(changes) {
+    var changesDiv = document.getElementById('buildChangesArea');
+    if (!changesDiv) return;
+    changesDiv.innerHTML = '';
+    changesDiv.style.marginTop = '16px';
+
+    var header = document.createElement('div');
+    header.className = 'stage-header';
+    header.style.cursor = 'pointer';
+    header.onclick = function () {
+      window.toggleCollapse(header);
+    };
+    header.innerHTML =
+      '<span class="chevron">\u25BC</span>' +
+      '<span class="stage-name">\uD83D\uDCDD Changes (' +
+      (changes ? changes.length : 0) +
+      ')</span>';
+    changesDiv.appendChild(header);
+
+    var content = document.createElement('div');
+    content.className = 'collapsible-content';
+
+    if (!changes || changes.length === 0) {
+      var emptyDiv = document.createElement('div');
+      emptyDiv.className = 'empty';
+      emptyDiv.style.padding = '8px 16px';
+      emptyDiv.textContent = 'No changes associated with this build.';
+      content.appendChild(emptyDiv);
+    } else {
+      changes.forEach(function (c) {
+        var changeDiv = document.createElement('div');
+        changeDiv.className = 'task';
+        changeDiv.style.cssText =
+          'display:flex;align-items:flex-start;gap:8px;padding:4px 8px;';
+
+        var commitSpan = document.createElement('span');
+        commitSpan.style.cssText =
+          'font-family:var(--vscode-editor-font-family, monospace);font-size:0.85em;color:var(--vscode-textLink-foreground);white-space:nowrap;cursor:pointer;min-width:64px;';
+        var shortId = (c.id || '').substring(0, 8);
+        commitSpan.textContent = shortId;
+        commitSpan.title = c.id || '';
+        if (c.location) {
+          commitSpan.onclick = (function (url) {
+            return function (e) {
+              e.stopPropagation();
+              window.openUrl(url);
+            };
+          })(c.location);
+        }
+        changeDiv.appendChild(commitSpan);
+
+        var msgSpan = document.createElement('span');
+        msgSpan.style.cssText = 'flex:1;min-width:0;';
+        var firstLine = (c.message || '').split('\n')[0];
+        msgSpan.textContent = firstLine;
+        msgSpan.title = c.message || '';
+        changeDiv.appendChild(msgSpan);
+
+        var metaSpan = document.createElement('span');
+        metaSpan.style.cssText =
+          'white-space:nowrap;font-size:0.85em;opacity:0.7;';
+        var parts = [];
+        if (c.author) parts.push(c.author);
+        if (c.timestamp) parts.push(timeAgo(c.timestamp));
+        metaSpan.textContent = parts.join(' \u00B7 ');
+        changeDiv.appendChild(metaSpan);
+
+        content.appendChild(changeDiv);
+      });
+    }
+
+    changesDiv.appendChild(header);
+    changesDiv.appendChild(content);
   }
 
   function renderReleaseArtifactFields(artifacts) {
@@ -1367,6 +1650,10 @@
           renderTimeline(msg.stages);
           break;
 
+        case 'buildChangesLoaded':
+          renderBuildChanges(msg.changes);
+          break;
+
         case 'buildQueued':
           if (currentDefinitionId !== null) {
             vscode.postMessage({
@@ -1437,6 +1724,105 @@
               project: currentProject,
             });
           }
+          break;
+
+        case 'deployOptionsLoaded':
+          var defSelect = document.getElementById('deployDefSelect');
+          var defs = msg.releaseDefinitions || [];
+          if (defs.length === 0) {
+            defSelect.innerHTML =
+              '<option value="">No release definitions found for this pipeline</option>';
+            defSelect.disabled = true;
+          } else {
+            defSelect.innerHTML =
+              '<option value="">-- select release definition --</option>';
+            defs.forEach(function (d) {
+              var opt = document.createElement('option');
+              opt.value = d.id;
+              opt.textContent = d.name;
+              defSelect.appendChild(opt);
+            });
+            defSelect.disabled = false;
+            if (defs.length === 1) {
+              defSelect.value = String(defs[0].id);
+            }
+          }
+          break;
+
+        case 'autoDeployOptionsLoaded':
+          autoDeployReleaseDefs = msg.releaseDefinitions || [];
+          var adDefSel = document.getElementById('autoDeployDefSelect');
+          if (adDefSel) {
+            adDefSel.innerHTML = '';
+            if (autoDeployReleaseDefs.length === 0) {
+              adDefSel.innerHTML =
+                '<option value="">No release definitions found</option>';
+              adDefSel.disabled = true;
+            } else {
+              autoDeployReleaseDefs.forEach(function (d) {
+                var opt = document.createElement('option');
+                opt.value = d.id;
+                opt.textContent = d.name;
+                adDefSel.appendChild(opt);
+              });
+              adDefSel.disabled = false;
+              // Auto-select first and load its environments
+              autoDeploySelectedDefId = autoDeployReleaseDefs[0].id;
+              adDefSel.value = String(autoDeploySelectedDefId);
+              vscode.postMessage({
+                command: 'loadAutoDeployEnvs',
+                releaseDefinitionId: autoDeploySelectedDefId,
+                project: currentProject,
+              });
+            }
+          }
+          break;
+
+        case 'autoDeployEnvsLoaded':
+          autoDeployEnvs = msg.environments || [];
+          var adEnvSel = document.getElementById('autoDeployEnvSelect');
+          if (adEnvSel) {
+            adEnvSel.innerHTML = '<option value="">All environments</option>';
+            autoDeployEnvs.forEach(function (env) {
+              var opt = document.createElement('option');
+              opt.value = env.name;
+              opt.textContent = env.name;
+              adEnvSel.appendChild(opt);
+            });
+            autoDeploySelectedEnv = null;
+          }
+          break;
+
+        case 'autoDeployResult':
+          if (msg.status === 'noDefinitions') {
+            showError(
+              'Auto-deploy: no release definitions found for this pipeline.',
+            );
+          } else if (
+            msg.status === 'multipleDefinitions' &&
+            currentBuildForTimeline
+          ) {
+            // Multiple release definitions — open the deploy modal for user to pick
+            deployBuildData = currentBuildForTimeline;
+            var modal = document.getElementById('deployModal');
+            document.getElementById('deployBuildLabel').textContent =
+              '#' +
+              (currentBuildForTimeline.buildNumber || '') +
+              ' \u00B7 ' +
+              (currentBuildForTimeline.sourceBranch || '');
+            var defSelect2 = document.getElementById('deployDefSelect');
+            defSelect2.innerHTML =
+              '<option value="">-- select release definition --</option>';
+            (msg.releaseDefinitions || []).forEach(function (d) {
+              var opt = document.createElement('option');
+              opt.value = d.id;
+              opt.textContent = d.name;
+              defSelect2.appendChild(opt);
+            });
+            defSelect2.disabled = false;
+            modal.classList.add('visible');
+          }
+          // 'deployed' status — releaseCreated message will follow from backend
           break;
 
         case 'error':

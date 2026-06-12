@@ -18,6 +18,9 @@ Review and manage Azure DevOps pull requests and pipelines directly in VS Code �
 - 📊 **Progress Bars** — Visual progress indicators per stage and overall, color-coded by status (green/red/blue), auto-refresh every 10s while running
 - ▶️ **Run Pipelines** — Queue new pipeline runs with branch selection directly from the dashboard
 - 📋 **Pipeline Sidebar** — See recent pipeline runs at a glance in the Activity Bar
+- 🚀 **Deploy from Build** — Trigger a release directly from a succeeded build row with one click
+- ⚡ **Auto-deploy on Completion** — Check "Auto-deploy when build succeeds" on a running build timeline to automatically create a release when it finishes. Choose a specific release definition and target environment (Dev, QA, Prod, etc.) — only your selected environment auto-deploys while others wait for manual approval
+- 📋 **Copy Image Name** — Copy container image names from build rows using a configurable `containerImageTemplate`
 
 ### General
 - 🔎 **Project Filtering** — Filter PRs and pipelines by project using the filter icon in each sidebar view title, or the project dropdown in the pipeline dashboard

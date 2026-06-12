@@ -1,3 +1,11 @@
+## [1.5.0] - 2026-05-26
+### Added
+- **Deploy from build**: 🚀 button on succeeded build rows to trigger a release directly from a completed build, with release definition selection
+- **Auto-deploy on build completion**: checkbox on running build timelines to automatically trigger a deployment when the build succeeds
+- **Environment selection for auto-deploy**: choose which release environment (e.g., Dev, QA, Prod) to deploy to — other environments are set to manual so only the selected one auto-deploys
+- Release definition and environment dropdowns appear inline in the timeline view when auto-deploy is enabled
+- `getReleaseDefinitionsForBuild` API method to find release definitions linked to a build pipeline
+
 ## [1.4.1] - 2026-05-25
 ### Added
 - **Copy Image Name** button on pipeline run rows and pipeline cards (uses `containerImageTemplate` setting)

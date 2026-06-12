@@ -4,7 +4,7 @@ import * as BuildApi from 'azure-devops-node-api/BuildApi';
 import * as ReleaseApi from 'azure-devops-node-api/ReleaseApi';
 import * as WorkItemTrackingApi from 'azure-devops-node-api/WorkItemTrackingApi';
 import { GitPullRequest, GitPullRequestSearchCriteria, PullRequestStatus, Comment, CommentThread, GitPullRequestChange, GitPullRequestIteration } from 'azure-devops-node-api/interfaces/GitInterfaces';
-import { Build, BuildDefinitionReference, BuildQueryOrder, BuildStatus, Timeline, YamlProcess } from 'azure-devops-node-api/interfaces/BuildInterfaces';
+import { Build, BuildDefinitionReference, BuildQueryOrder, BuildStatus, Change, Timeline, YamlProcess } from 'azure-devops-node-api/interfaces/BuildInterfaces';
 import { Release, ReleaseDefinition, ReleaseStartMetadata } from 'azure-devops-node-api/interfaces/ReleaseInterfaces';
 import { WorkItem, Wiql } from 'azure-devops-node-api/interfaces/WorkItemTrackingInterfaces';
 import { JsonPatchOperation } from 'azure-devops-node-api/interfaces/common/VSSInterfaces';
@@ -464,6 +464,17 @@ export class AzureDevOpsApi {
   }
 
   /**
+   * Get changes (commits) associated with a specific build.
+   */
+  async getBuildChanges(buildId: number, projectName?: string, top: number = 50): Promise<Change[]> {
+    return this.withRetry(async () => {
+      const build = await this.getBuildClient();
+      const project = projectName || this.getConfig().project;
+      return await build.getBuildChanges(project, buildId, undefined, top) ?? [];
+    });
+  }
+
+  /**
    * Get a build definition with full details (variables, process parameters).
    */
   async getBuildDefinition(definitionId: number, projectName?: string) {
@@ -626,6 +637,17 @@ export class AzureDevOpsApi {
   }
 
   /**
+   * Get release definitions linked to a specific build definition as artifact source.
+   */
+  async getReleaseDefinitionsForBuild(buildDefinitionId: number, projectName?: string): Promise<ReleaseDefinition[]> {
+    return this.withRetry(async () => {
+      const release = await this.getReleaseClient();
+      const project = projectName || this.getConfig().project;
+      return await release.getReleaseDefinitions(project, undefined, undefined, 'Build', String(buildDefinitionId), 50) ?? [];
+    });
+  }
+
+  /**
    * Get a single release definition with full details (including artifacts).
    */
   async getReleaseDefinition(definitionId: number, projectName?: string): Promise<ReleaseDefinition> {
@@ -650,7 +672,7 @@ export class AzureDevOpsApi {
   /**
    * Create (trigger) a new release for a given release definition.
    */
-  async createRelease(definitionId: number, description?: string, projectName?: string, artifacts?: { alias: string; version?: string; branch?: string }[]): Promise<Release> {
+  async createRelease(definitionId: number, description?: string, projectName?: string, artifacts?: { alias: string; version?: string; branch?: string }[], manualEnvironments?: string[]): Promise<Release> {
     return this.withRetry(async () => {
       const release = await this.getReleaseClient();
       const project = projectName || this.getConfig().project;
@@ -664,6 +686,7 @@ export class AzureDevOpsApi {
             sourceBranch: a.branch || undefined,
           },
         })),
+        manualEnvironments: manualEnvironments?.length ? manualEnvironments : undefined,
       };
       return await release.createRelease(metadata, project);
     });
